@@ -1,0 +1,16 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# colcon
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# editor
+.obsidian/
+.DS_Store
+
+# python
+__pycache__/
+*.pyc
