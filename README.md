@@ -10,8 +10,8 @@ Physical AI 课程期末作业。在 MuJoCo 中仿真 SO-101 机械臂，通过 
 |---|---|---|
 | M0 环境 | Mac 上跑通 ROS 2 与 MuJoCo，加载 SO-101 | ✅ 完成 |
 | M1 接口 | MuJoCo 节点发布 `/joint_states`，接收 `/joint_command` | ✅ 完成 |
-| M2 数据 | 脚本策略 / 遥操作录制 rosbag，转换为 LeRobot 数据集 | ⏳ 下一步 |
-| M3 训练 | 在 Colab 上训练策略 | — |
+| M2 数据 | 脚本策略录制 rosbag，转换为 LeRobot 数据集 | ✅ 完成 |
+| M3 训练 | 在 Colab 上训练策略 | ⏳ 下一步 |
 | M4 闭环 | 策略节点控制仿真中的 SO-101，统计成功率 | — |
 | M5 收尾 | 升级任务、整理报告与演示视频 | — |
 
@@ -33,6 +33,9 @@ adv1_final_project/
 ├── CLAUDE.md                              # 给 Claude Code 的项目说明
 ├── physical_ai_final_project_plan.md      # 方案选型与计划
 ├── pixi.toml / pixi.lock                  # 环境定义与锁定版本
+├── scripts/
+│   └── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
+├── data/                                  # 采集的数据（不纳入 git）
 └── ros2_ws/                               # colcon 工作区
     └── src/
         └── so101_mujoco/                  # ament_python 包
@@ -42,11 +45,16 @@ adv1_final_project/
             ├── models/robotstudio_so101/  # SO-101 的 MJCF 模型（来自 MuJoCo Menagerie）
             │   ├── so101.xml              # 机械臂本体
             │   ├── scene.xml              # 机械臂 + 地面
-            │   ├── scene_box.xml          # 机械臂 + 地面 + 方块（默认场景）
+            │   ├── scene_box.xml          # 机械臂 + 地面 + 方块（Menagerie 原版，方块够不着）
+            │   ├── scene_pick_place.xml   # 抓取放置场景（默认场景，本项目新增）
             │   └── assets/*.stl
             └── so101_mujoco/
                 ├── sim_node.py            # MuJoCo 仿真节点
-                └── wave_demo.py           # 发送正弦关节指令的演示节点
+                ├── wave_demo.py           # 发送正弦关节指令的演示节点
+                ├── kinematics.py          # 俯视抓取的数值 IK
+                ├── expert.py              # 脚本专家：规划整条抓取放置轨迹
+                ├── collect_demos.py       # 采集节点：专家示教 → 每回合一个 rosbag
+                └── export_dataset.py      # rosbag → 对齐的训练帧（.npz）
 ```
 
 ## 安装
@@ -99,6 +107,45 @@ ros2 topic echo /box_pose
 ros2 service call /reset std_srvs/srv/Trigger
 ```
 
+### 采集示教数据（M2）
+
+数据流：`collect_demos`（脚本专家 + rosbag 录制）→ `export_dataset`（rosbag → npz）→ `scripts/npz_to_lerobot.py`（npz → LeRobot 数据集）。
+
+```bash
+# 终端 1：同步模式 + 全速运行仿真（同步模式见下文）
+ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:=0.0
+
+# 终端 2：采集 50 个回合（每回合约 10 s 仿真时间，在 M1 上约 4.5 s）
+ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=50 -p output_dir:=data/demos
+
+# 导出为 npz（只导出成功的回合）
+ros2 run so101_mujoco export_dataset data/demos data/demos.npz
+```
+
+在装有 LeRobot 的环境（Colab 等，不要装进 pixi 环境）中转换为 LeRobot 数据集（已在 lerobot 0.6.1 上验证，ACT 可以直接训练）：
+
+```bash
+pip install 'lerobot[dataset,training]==0.6.1'
+python scripts/npz_to_lerobot.py data/demos.npz --repo-id local/so101_sim_pick_place \
+    --root data/lerobot/so101_sim_pick_place
+```
+
+想看专家演示时，可以用带 viewer 的 sim（`--prefix mjpython ... -p use_viewer:=true -p sync_mode:=true`，`realtime_factor` 保持 1.0），再运行 `collect_demos`。
+
+**任务**：把绿色立方体（4 cm）抓起，放到红色方框（中心 (0.22, −0.12)）上。每次 `/reset` 时，方块在极坐标 r ∈ [0.17, 0.25] m、方位角 ∈ [5°, 40°] 的范围内随机生成，yaw 也随机。成功判据：方块中心与目标的水平距离 < 3 cm，且方块立在地面上（z < 3 cm）。
+
+**专家**（`expert.py`）：读取回合开始时的方块位姿，用数值 IK（MuJoCo 雅可比 + 阻尼最小二乘）规划整条轨迹：关节空间移动到方块上方 → 竖直下降 → 夹紧 → 抬起 → 平移到目标上方 → 下降 → 松开 → 抬起 → 回到初始姿态，共约 10 s（506 帧）。
+
+**rosbag 内容**：每回合一个 mcap bag（`data/demos/episode_NNNN`），包含 `/joint_states`、`/box_pose`、`/joint_command`；`data/demos/episodes.jsonl` 记录每个回合的初始位姿与成败。每条指令的时间戳等于它所回应的那条关节状态的时间戳，导出时据此把观测和动作配对。
+
+**数据集字段**（50 fps）：
+
+| 字段 | 维度 | 内容 |
+|---|---|---|
+| `observation.state` | 6 | 关节角（rad），顺序同下文关节顺序 |
+| `observation.environment_state` | 5 | 方块 `[x, y, z, cos 4ψ, sin 4ψ]`（ψ 为 yaw；立方体每 90° 对称，抓取方向只取决于 ψ mod 90°） |
+| `action` | 6 | 下发的关节目标角（rad） |
+
 ### 只看模型（不启动 ROS）
 
 ```bash
@@ -112,8 +159,8 @@ pixi run python -m mujoco.viewer --mjcf=ros2_ws/src/so101_mujoco/models/robotstu
 | 发布 | `/joint_states` | `sensor_msgs/JointState` | 6 个关节的位置 / 速度 / 力矩 |
 | 发布 | `/box_pose` | `geometry_msgs/PoseStamped` | 方块位姿（场景中有名为 `box` 的 body 时），frame 为 `world` |
 | 发布 | `/clock` | `rosgraph_msgs/Clock` | 仿真时间，重置后继续递增，不会回退 |
-| 订阅 | `/joint_command` | `sensor_msgs/JointState` | 关节目标角度（弧度）。带 `name` 时可只控制部分关节；不带 `name` 时需按顺序给出全部 6 个值。超出范围会被截断 |
-| 服务 | `/reset` | `std_srvs/Trigger` | 将场景重置到初始状态 |
+| 订阅 | `/joint_command` | `sensor_msgs/JointState` | 关节目标角度（弧度）。带 `name` 时可只控制部分关节；不带 `name` 时需按顺序给出全部 6 个值；`name` 和 `position` 都为空表示“保持当前目标”（同步模式下用作应答）。超出范围会被截断 |
+| 服务 | `/reset` | `std_srvs/Trigger` | 将场景重置到初始状态（开启 `randomize_box` 时随机摆放方块） |
 
 关节顺序：`shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll`, `gripper`。每个关节都是位置控制执行器，指令即目标角度。
 
@@ -121,15 +168,24 @@ pixi run python -m mujoco.viewer --mjcf=ros2_ws/src/so101_mujoco/models/robotstu
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `model_path` | 包内 `scene_box.xml` | MJCF 场景文件路径 |
+| `model_path` | 包内 `scene_pick_place.xml` | MJCF 场景文件路径 |
 | `keyframe` | `""` | 初始姿态使用的 keyframe 名（如 `pickup`），为空则使用模型默认姿态 |
 | `publish_rate` | `50.0` | `/joint_states`、`/box_pose` 的发布频率（Hz） |
-| `realtime_factor` | `1.0` | 仿真速度相对实时的倍率，`0` 表示尽可能快 |
+| `realtime_factor` | `1.0` | 仿真速度相对实时的倍率，`0.0` 表示尽可能快（必须写成浮点数，写 `0` 会报类型错误） |
 | `use_viewer` | `false` | 是否打开 MuJoCo 可视化窗口（需 mjpython） |
 | `publish_clock` | `true` | 是否发布 `/clock` |
+| `randomize_box` | `true` | 重置时随机摆放方块（位置 + yaw） |
+| `box_radius_range` | `[0.17, 0.25]` | 方块到基座的水平距离范围（m） |
+| `box_azimuth_range` | `[5.0, 40.0]` | 方块方位角范围（度，从 +x 轴起算） |
+| `seed` | `0` | 随机种子（评估时固定它，便于复现） |
+| `sync_mode` | `false` | 同步模式：每发布一帧状态，就等待一条时间戳相同的 `/joint_command` 后再继续步进 |
+| `sync_timeout` | `1.0` | 同步模式下最多等待多久（墙钟秒）；超时则照常步进，因此没有控制端时仿真也能继续运行 |
+
+**同步模式**：控制端（`collect_demos`、之后的策略节点）对每一条 `/joint_states` 都回复一条带相同时间戳的指令，没有新指令时回复空指令。这样无论控制端多慢、是否卡顿，指令都会在下一步之前生效，记录下来的 (状态, 动作) 严格对应，结果也可以复现。异步模式下，控制端的任何卡顿都会让机械臂停留在旧目标上，而计划仍在继续推进，导致数据中出现“动作在变、状态冻结”的片段（实测出现过）。
 
 ## 注意事项
 
+- **方块工作空间**：Menagerie 原版 `scene_box.xml` 的方块在 x=0.5 m，而 SO-101 末端的最大水平伸展只有约 0.48 m，够不着。俯视姿态的末端只能到 z≈0.06–0.09 m（再高 `wrist_flex` 就到限位了），因此改用 4 cm 立方体；r < 0.16 m 时夹爪上的相机支架会与 `shoulder` 自碰撞。默认随机范围在这些限制之内，离线测试 600/600 成功。
 - **mjpython 与 python 的区别**（macOS）：使用 `launch_passive` 的程序（如 `sim_node` 开启 viewer 时）必须用 `mjpython` 启动；而独立 viewer `python -m mujoco.viewer` 必须用普通 `python`，用 `mjpython` 会报 `Caught an unknown exception!`。
 - **Ctrl-C**：在终端中直接 Ctrl-C 可以正常退出。在脚本中用 `kill -INT <pid>` 停止 `ros2 run` 启动的节点**无效**（`ros2 run` 不会转发信号），应发给整个进程组：`kill -INT -<pgid>`。
 - **话题互相看不到时**：设置 `export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`，或切换中间件 `export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`。
