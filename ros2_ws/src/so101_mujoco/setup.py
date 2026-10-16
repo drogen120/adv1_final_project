@@ -34,6 +34,8 @@ setup(
         'console_scripts': [
             'sim_node = so101_mujoco.sim_node:main',
             'wave_demo = so101_mujoco.wave_demo:main',
+            'collect_demos = so101_mujoco.collect_demos:main',
+            'export_dataset = so101_mujoco.export_dataset:main',
         ],
     },
 )

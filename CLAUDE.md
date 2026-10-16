@@ -6,7 +6,8 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 ## 当前进度
 
 - M0（环境）、M1（`sim_node`：`/joint_states`、`/joint_command`、`/box_pose`、`/clock`、`/reset`）已完成并验证。
-- 下一步 M2：数据采集。先确认 `scene_box.xml` 中方块初始位置（x=0.5 m）是否在 SO-101 工作空间内——尚未验证，可能需要移近并随机化。
+- M2 已完成：`scene_pick_place.xml`（4 cm 立方体，重置时随机摆放）、IK 脚本专家（`expert.py`）、`collect_demos`（同步模式下录制 rosbag）、`export_dataset`（bag → npz）、`scripts/npz_to_lerobot.py`（npz → LeRobot 0.6.1 数据集，ACT 冒烟训练已通过）。数据在 `data/`（不纳入 git）。
+- 下一步 M3：训练 ACT（state + environment_state，无图像）。M4 的策略节点要在 `sync_mode` 下运行，对每条 `/joint_states` 回复指令，并用 `expert.box_features` 计算方块特征。
 
 ## 环境与命令
 
@@ -23,9 +24,16 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 - macOS 没有 `timeout` 命令；`ros2 topic pub/echo/hz` 在脚本中需要自己加超时，否则会挂住。`ros2 topic pub --once` 要加 `-w 1` 等待订阅者。
 - 在 `sim_node.run()` 等函数内部写 `import mujoco.viewer` 会把 `mujoco` 变成局部变量导致 `UnboundLocalError`，导入放在文件顶部。
 - spin 线程在关闭时会抛 `ExternalShutdownException`，属正常现象，需捕获。
+- **SO-101 工作空间**：末端（`gripperframe` site，x 轴为接近方向，z 轴为开合方向）最大水平伸展约 0.48 m；俯视姿态只能到 z≈0.06–0.09 m（受 `wrist_flex` 限位约束）；r < 0.16 m 时相机支架会与 `shoulder` 自碰撞。IK 不检查碰撞，改动随机范围后要用离线仿真重新验证。
+- `mj_jacSite` 依赖 `mj_comPos`：只调用 `mj_kinematics` 时，雅可比全为零。
+- 仿真时间转 `Time` 时，要先四舍五入到整数纳秒再 `divmod`；先取 `int(seconds)` 再对小数部分四舍五入，会在 x.9999999 处倒退 1 秒。
+- 不要在步进物理时持有回调也需要的锁：Python 的 `Lock` 不保证公平，仿真跟不上目标速度时回调会被饿死（指令几秒不生效）。
+- 采集/评估要用 `sync_mode`；异步模式下，控制端卡顿会产生“动作变化、状态冻结”的坏数据。
+- ROS 参数类型严格：浮点参数要写 `0.0`，写 `0` 会报 `InvalidParameterTypeException`。
 
 ## 约定
 
-- `sim_node` 中 `self.lock` 保护 `self.data`：ROS 回调在 executor 线程，物理步进在主（脚本）线程；访问 `data` 必须持锁。
+- `sim_node` 中只有主（仿真）线程访问 `self.data`。ROS 回调（executor 线程）把指令和重置请求放进 `self.pending`（`Condition`，只在拷贝时短暂持有），由主循环在每次步进前通过 `_apply_requests()` 应用。
+- 控制端发布的 `/joint_command` 时间戳等于它所回应的 `/joint_states` 的时间戳（同步模式和数据导出都依赖这一点）；没有新指令时发空指令作为应答。
 - 仿真时间 = `time_offset + data.time`，重置时累加 offset，保证 `/clock` 单调递增（rosbag 依赖这一点）。
-- 依赖用 `pixi add ros-jazzy-<pkg>` / `pixi add --pypi <pkg>` 添加，不用 rosdep。LeRobot（含 torch）暂不装进 ROS 环境，避免与 RoboStack 的 numpy 等版本冲突；训练在 Colab 上进行。
+- 依赖用 `pixi add ros-jazzy-<pkg>` / `pixi add --pypi <pkg>` 添加，不用 rosdep。LeRobot（含 torch）暂不装进 ROS 环境，避免与 RoboStack 的 numpy 等版本冲突；训练在 Colab 上进行（本机 MPS 上 ACT 约 5 step/s @ batch 8，可作备选）。本地测试 LeRobot 时，用 uv 在 pixi 之外单独建 venv（`lerobot[dataset,training]==0.6.1`）。
