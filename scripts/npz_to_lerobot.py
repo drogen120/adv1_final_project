@@ -25,6 +25,8 @@ def main():
     parser.add_argument('npz')
     parser.add_argument('--repo-id', required=True)
     parser.add_argument('--root', help='output directory (default: $HF_LEROBOT_HOME/<repo-id>)')
+    parser.add_argument('--num-episodes', type=int,
+                        help='only convert the first N episodes (default: all)')
     parser.add_argument('--push', action='store_true', help='push to the Hugging Face Hub')
     args = parser.parse_args()
 
@@ -43,7 +45,8 @@ def main():
                                     root=args.root, robot_type='so101_mujoco', use_videos=False)
 
     episodes = data['episode_index']
-    for ep in np.unique(episodes):
+    keep = np.unique(episodes)[:args.num_episodes]
+    for ep in keep:
         rows = np.flatnonzero(episodes == ep)
         assert np.all(np.diff(data['frame_index'][rows]) == 1), f'episode {ep} has gaps'
         for i in rows:
@@ -55,7 +58,7 @@ def main():
             })
         dataset.save_episode()
     dataset.finalize()
-    print(f'{len(np.unique(episodes))} episodes, {len(episodes)} frames -> {dataset.root}')
+    print(f'{len(keep)} episodes, {np.isin(episodes, keep).sum()} frames -> {dataset.root}')
 
     if args.push:
         dataset.push_to_hub()

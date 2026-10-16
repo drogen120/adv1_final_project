@@ -1,7 +1,7 @@
 # Physical AI 课程期末作业：计划与方向整理
 
 > 整理日期：2026-10-13（2026-10-15 更新）
-> 状态：M0（环境）、M1（ROS2 接口）、M2（数据采集）已完成；下一步 M3（训练）
+> 状态：M0（环境）、M1（ROS2 接口）、M2（数据采集）已完成；M3（训练）进行中，M4 的评估链路已打通
 
 ---
 
@@ -60,8 +60,8 @@
 2. **ROS2 接口**：把 MuJoCo 封装为 ROS2 节点，发布关节状态与方块位姿，订阅关节指令，提供重置服务。✅（接口细节见 README）
 3. **数据采集**：用 IK 脚本专家自动生成示教轨迹，用 rosbag（mcap）逐回合录制。✅
 4. **数据转换**：rosbag → npz（ROS 环境中）→ LeRobot 数据集（LeRobot 环境中）。✅
-5. **训练**：使用 LeRobot 训练 ACT 策略（可选 SmolVLA）。训练放在 Colab / 云 GPU，不在 M1 上硬训。
-6. **闭环控制**：策略节点订阅观测、发布动作，在仿真中完成任务。
+5. **训练**：使用 LeRobot 训练 ACT 策略（状态输入）作为基线；SmolVLA 放到扩展阶段（需要先加图像观测，见第 10 节）。训练放在 Colab Pro，不在 M1 上硬训。
+6. **闭环控制**：策略在独立 venv 的推理服务（`scripts/policy_server.py`）中运行，ROS 节点 `policy_eval` 通过本地 TCP 获取动作，在 `sync_mode` 下控制仿真并统计成功率。
 
 ## 5. 任务设计
 
@@ -73,7 +73,7 @@
 - **观测**：关节角（6）+ 方块特征 `[x, y, z, cos 4ψ, sin 4ψ]`（5，作为 `observation.environment_state`）；暂不使用图像（场景中已预留 `overview` 相机，可作为扩展）。
 - **动作**：6 个关节的目标角，50 Hz。
 - **成功判据**：方块中心与目标的水平距离 < 3 cm，且方块立在地面上。
-- **评价**：`sim_node` 固定 `seed`，在 `sync_mode` 下跑 N 个回合，统计成功率。
+- **评价**：`sim_node` 固定 `seed`（评估用 100；示教数据用了 0 和 1），在 `sync_mode` 下跑 50 个回合，统计成功率；用闭环成功率挑选 checkpoint。
 
 ## 6. 环境搭建方案（Mac / M1）
 
@@ -89,7 +89,7 @@ ROS2 在 macOS 上不是官方主要支持平台，这曾是最大风险点。**
 - **包管理**：pixi（`pixi.toml` / `pixi.lock`），频道为 `robostack-jazzy` + `conda-forge`。RoboStack Jazzy 固定 Python 3.12、NumPy 2，要求 macOS ≥ 14。
 - **osx-arm64 包核实结果（2026-10-13）**：`desktop`、`ros2_control`/`ros2_controllers`、`rosbag2`（含 mcap、Python 接口）、`xacro`、`joy`、`teleop_twist_keyboard`、`cv_bridge`、`moveit`、`ros_gz` 等均可用；**`mujoco_ros2_control` 仅有 Linux 版本**，`webots_ros2` 全平台都没有。
 - **MuJoCo**：`pixi add --pypi mujoco`。macOS 上 `launch_passive` 必须用 `mjpython` 启动，独立 viewer（`python -m mujoco.viewer`）则必须用普通 `python`。
-- **LeRobot**：暂不装入 ROS 环境（torch 等依赖可能与 RoboStack 冲突）；M4 需要在 Mac 上推理时再评估，必要时把策略放到独立进程中。
+- **LeRobot**：不装入 ROS 环境。本机推理用工程下单独的 uv venv（`.venv-lerobot`，`lerobot[dataset,training]==0.6.1`），作为独立进程运行。从 pixi shell 启动时，pixi 的 `PYTHONPATH` 会把 ROS 环境的 numpy/libomp 带进来（`OMP: Error #15`），`policy_server.py` 已在导入 torch 前把它们从 `sys.path` 中去掉。
 
 ## 7. 参考资源
 
@@ -107,7 +107,7 @@ ROS2 在 macOS 上不是官方主要支持平台，这曾是最大风险点。**
 |---|---|
 | ~~Mac 上 ROS2 安装困难~~ | 已解决：RoboStack + pixi 安装成功 |
 | ~~Mac 上没有 mujoco_ros2_control~~ | 已解决：自写 rclpy + mujoco 仿真节点 |
-| LeRobot 与 ROS 环境依赖冲突 | 训练放 Colab；Mac 推理时用独立环境 / 独立进程 |
+| ~~LeRobot 与 ROS 环境依赖冲突~~ | 已解决：训练放 Colab；Mac 推理用独立 venv 中的推理服务 + 本地 TCP |
 | ~~方块初始位置（x=0.5 m）可能超出 SO-101 工作空间~~ | 已解决：确认不可达，新建 `scene_pick_place.xml` 并随机化 |
 | 控制端延迟 / 卡顿导致数据中动作与状态错位 | 已解决：`sim_node` 增加 `sync_mode`，逐帧握手；M4 推理也使用该模式 |
 | M1 无法高效训练 | 在 Colab / 云 GPU 训练，Mac 只做采集与推理 |
@@ -120,9 +120,9 @@ ROS2 在 macOS 上不是官方主要支持平台，这曾是最大风险点。**
 
 1. ✅ **M0 环境**：Mac 上跑通 ROS2（`ros2 topic list`）与 MuJoCo（加载 SO-101）。（2026-10-13）
 2. ✅ **M1 接口**：MuJoCo 节点发布 `/joint_states`，能接收 `/joint_command` 控制机械臂。（2026-10-14；实测 50 Hz，另有 `/box_pose`、`/clock`、`/reset`）
-3. ✅ **M2 数据**：脚本专家录制 rosbag，转换为 LeRobot 数据集。（2026-10-15；50 回合，ACT 冒烟训练通过）
-4. ⏳ **M3 训练**：在 Colab 上训练 ACT（pick-and-place，状态输入）。
-5. **M4 闭环**：策略节点在仿真中控制 SO-101 完成任务，并统计成功率。
+3. ✅ **M2 数据**：脚本专家录制 rosbag，转换为 LeRobot 数据集。（2026-10-15；50 回合，ACT 冒烟训练通过；2026-10-16 补采到 200 回合，全部成功）
+4. ⏳ **M3 训练**：在 Colab 上训练 ACT（pick-and-place，状态输入）。对比 50 / 200 回合两个数据量；`notebooks/train_act_colab.ipynb` 已就绪。
+5. ⏳ **M4 闭环**：策略节点在仿真中控制 SO-101 完成任务，并统计成功率。`policy_eval` + `policy_server.py` 已用冒烟 checkpoint 打通（约 5 s/回合）；对比整块执行与时间集成两种执行方式。
 6. **M5 收尾**：升级任务到 pick-and-place（如时间允许）、整理报告与演示视频。
 
 ## 10. 待决事项
@@ -130,6 +130,6 @@ ROS2 在 macOS 上不是官方主要支持平台，这曾是最大风险点。**
 - [x] RoboStack 在本机能否装上 ROS2 Jazzy 及所需包（可以；仅 mujoco_ros2_control 缺失，已绕开）
 - [x] 方块初始位置是否在 SO-101 工作空间内、是否随机化（x=0.5 m 不可达；改为随机化，范围见第 5 节）
 - [x] 最终任务选 reaching 还是 pick-and-place（pick-and-place）
-- [ ] 观测是否包含相机图像
-- [ ] 训练用 Colab 还是其他云 GPU
+- [x] 观测是否包含相机图像（基线不用；扩展阶段加 overview + wrist 图像，对比 ACT 图像版与 SmolVLA 微调）
+- [x] 训练用 Colab 还是其他云 GPU（Colab Pro）
 - [ ] 作业的提交截止日期与评分要点（需对照课程要求）

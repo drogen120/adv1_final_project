@@ -11,8 +11,8 @@ Physical AI 课程期末作业。在 MuJoCo 中仿真 SO-101 机械臂，通过 
 | M0 环境 | Mac 上跑通 ROS 2 与 MuJoCo，加载 SO-101 | ✅ 完成 |
 | M1 接口 | MuJoCo 节点发布 `/joint_states`，接收 `/joint_command` | ✅ 完成 |
 | M2 数据 | 脚本策略录制 rosbag，转换为 LeRobot 数据集 | ✅ 完成 |
-| M3 训练 | 在 Colab 上训练策略 | ⏳ 下一步 |
-| M4 闭环 | 策略节点控制仿真中的 SO-101，统计成功率 | — |
+| M3 训练 | 在 Colab 上训练 ACT（状态输入） | ⏳ 进行中（数据 200 回合，训练 notebook 就绪） |
+| M4 闭环 | 策略节点控制仿真中的 SO-101，统计成功率 | ⏳ 评估节点与推理服务已打通 |
 | M5 收尾 | 升级任务、整理报告与演示视频 | — |
 
 ## 环境
@@ -33,8 +33,11 @@ adv1_final_project/
 ├── CLAUDE.md                              # 给 Claude Code 的项目说明
 ├── physical_ai_final_project_plan.md      # 方案选型与计划
 ├── pixi.toml / pixi.lock                  # 环境定义与锁定版本
+├── notebooks/
+│   └── train_act_colab.ipynb              # 在 Colab 上训练 ACT（M3）
 ├── scripts/
 │   ├── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
+│   ├── policy_server.py                   # 推理服务：在 LeRobot venv 中加载策略，通过本地 TCP 提供动作
 │   └── visualize_demos.py                 # 把采集的数据回放成动画（mp4 或窗口）
 ├── data/                                  # 采集的数据（不纳入 git）
 └── ros2_ws/                               # colcon 工作区
@@ -55,7 +58,8 @@ adv1_final_project/
                 ├── kinematics.py          # 俯视抓取的数值 IK
                 ├── expert.py              # 脚本专家：规划整条抓取放置轨迹
                 ├── collect_demos.py       # 采集节点：专家示教 → 每回合一个 rosbag
-                └── export_dataset.py      # rosbag → 对齐的训练帧（.npz）
+                ├── export_dataset.py      # rosbag → 对齐的训练帧（.npz）
+                └── policy_eval.py         # 闭环评估节点：调用推理服务控制仿真，统计成功率
 ```
 
 ## 安装
@@ -119,6 +123,9 @@ ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:
 # 终端 2：采集 50 个回合（每回合约 10 s 仿真时间，在 M1 上约 4.5 s）
 ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=50 -p output_dir:=data/demos
 
+# 追加采集时要换一个 seed，否则会重复已有回合的方块摆放（编号会自动接着往下）
+# 现有数据：回合 0–49 用 seed 0，50–199 用 seed 1；评估用 seed 100
+
 # 导出为 npz（只导出成功的回合）
 ros2 run so101_mujoco export_dataset data/demos data/demos.npz
 ```
@@ -155,6 +162,47 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 | `observation.state` | 6 | 关节角（rad），顺序同下文关节顺序 |
 | `observation.environment_state` | 5 | 方块 `[x, y, z, cos 4ψ, sin 4ψ]`（ψ 为 yaw；立方体每 90° 对称，抓取方向只取决于 ψ mod 90°） |
 | `action` | 6 | 下发的关节目标角（rad） |
+
+### 训练策略（M3）
+
+在 Colab（GPU）上运行 `notebooks/train_act_colab.ipynb`：把 `data/demos.npz` 和 `scripts/npz_to_lerobot.py` 上传到 Google Drive 的 `so101_act/` 目录，按顺序运行即可。notebook 会转换出两个数据集（全部 200 回合 / 前 50 回合），各训练一个 ACT：
+
+| 设置 | 值 |
+|---|---|
+| 输入 | `observation.state` + `observation.environment_state`（无图像） |
+| `chunk_size` / `n_action_steps` | 50 / 50（1 s 动作块） |
+| batch / 步数 / 存档间隔 | 64 / 60k / 10k |
+| 其余 | LeRobot 0.6.1 默认（lr 1e-5，KL 权重 10） |
+
+输出写在 Drive 的 `so101_act/outputs/<run>/checkpoints/NNNNNN/pretrained_model`，最后一个单元把所有 `pretrained_model` 打包下载。在本机解压到工程根目录的 `outputs/`（不纳入 git）。
+
+### 闭环评估（M4）
+
+LeRobot 和 torch 不装进 pixi 环境：策略在独立 venv 中由 `scripts/policy_server.py` 加载，ROS 节点 `policy_eval` 通过本地 TCP（每行一个 JSON）向它请求动作。
+
+```bash
+# 一次性：建 LeRobot venv（工程根目录下的 .venv-lerobot，不纳入 git）
+uv venv -p 3.12 .venv-lerobot
+VIRTUAL_ENV=.venv-lerobot uv pip install 'lerobot[dataset,training]==0.6.1'
+
+# 终端 1：推理服务（可以在 pixi shell 里启动，脚本会屏蔽 pixi 的 PYTHONPATH）
+.venv-lerobot/bin/python scripts/policy_server.py outputs/act_200/checkpoints/060000/pretrained_model
+#   时间集成：加 --temporal-ensemble 0.01；改每块执行步数：--n-action-steps 25
+
+# 终端 2：仿真，同步模式，用训练没用过的 seed
+ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:=0.0 -p seed:=100
+
+# 终端 3：评估 50 个回合（每回合 600 帧 = 12 s 仿真时间，在 M1 上约 5 s）
+ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=data/eval/act_200_60k
+```
+
+`policy_eval` 对每条 `/joint_states` 等到同一时间戳的 `/box_pose` 后，按与 `export_dataset` 相同的方式构造观测（关节角 + `expert.box_features`），请求动作并以相同时间戳发布 `/joint_command`。输出：
+
+- `episodes.jsonl`：每回合的方块初始/最终位置、是否成功、离目标距离、方块是否被抬起（区分“没抓起来”和“抓起后掉落/放偏”）、平均推理耗时；
+- `summary.json`：成功率；
+- `rollouts.npz`：全部帧，格式同 `demos.npz`，可以直接回放：`pixi run python scripts/visualize_demos.py --data data/eval/act_200_60k/rollouts.npz 0-4`。
+
+同一 seed 下每次评估的方块摆放序列相同，不同 checkpoint / 执行方式的成功率可以直接对比。
 
 ### 只看模型（不启动 ROS）
 
