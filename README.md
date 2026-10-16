@@ -34,7 +34,8 @@ adv1_final_project/
 ├── physical_ai_final_project_plan.md      # 方案选型与计划
 ├── pixi.toml / pixi.lock                  # 环境定义与锁定版本
 ├── scripts/
-│   └── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
+│   ├── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
+│   └── visualize_demos.py                 # 把采集的数据回放成动画（mp4 或窗口）
 ├── data/                                  # 采集的数据（不纳入 git）
 └── ros2_ws/                               # colcon 工作区
     └── src/
@@ -130,7 +131,16 @@ python scripts/npz_to_lerobot.py data/demos.npz --repo-id local/so101_sim_pick_p
     --root data/lerobot/so101_sim_pick_place
 ```
 
-想看专家演示时，可以用带 viewer 的 sim（`--prefix mjpython ... -p use_viewer:=true -p sync_mode:=true`，`realtime_factor` 保持 1.0），再运行 `collect_demos`。
+**检查数据**：`scripts/visualize_demos.py` 读取 `data/demos.npz`，把选中的回合回放成动画。左边是按记录的关节角和方块位姿重放的 MuJoCo 画面（只算运动学，不跑物理）；右边是各关节的状态（实线）与动作（虚线）曲线以及方块高度，带一条随播放移动的光标。不需要 ROS。
+
+```bash
+pixi run python scripts/visualize_demos.py --list         # 列出所有回合（帧数、方块初始位置和朝向等）
+pixi run python scripts/visualize_demos.py 0 3 10-12       # 每个回合生成一个 data/viz/episode_NNNN.mp4（约 13 s/回合）
+pixi run python scripts/visualize_demos.py 5 --show        # 直接在窗口中播放
+pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧绘制、2 倍速，生成更快
+```
+
+想看专家演示时，也可以用带 viewer 的 sim（`--prefix mjpython ... -p use_viewer:=true -p sync_mode:=true`，`realtime_factor` 保持 1.0），再运行 `collect_demos`。
 
 **任务**：把绿色立方体（4 cm）抓起，放到红色方框（中心 (0.22, −0.12)）上。每次 `/reset` 时，方块在极坐标 r ∈ [0.17, 0.25] m、方位角 ∈ [5°, 40°] 的范围内随机生成，yaw 也随机。成功判据：方块中心与目标的水平距离 < 3 cm，且方块立在地面上（z < 3 cm）。
 
