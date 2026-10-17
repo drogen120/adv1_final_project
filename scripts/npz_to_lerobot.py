@@ -30,7 +30,8 @@ def main():
     parser.add_argument('--push', action='store_true', help='push to the Hugging Face Hub')
     args = parser.parse_args()
 
-    data = np.load(args.npz)
+    # Load every array once: indexing an NpzFile decompresses the whole array on each access.
+    data = dict(np.load(args.npz))
     joints = [str(n) for n in data['joint_names']]
     env_dim = data['observation_environment_state'].shape[1]
     assert env_dim == len(BOX_FEATURES), f'unexpected environment state size {env_dim}'
