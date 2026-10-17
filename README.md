@@ -33,11 +33,14 @@ adv1_final_project/
 ├── CLAUDE.md                              # 给 Claude Code 的项目说明
 ├── physical_ai_final_project_plan.md      # 方案选型与计划
 ├── pixi.toml / pixi.lock                  # 环境定义与锁定版本
+├── docs/
+│   └── eval_act_200_failure_analysis.md   # ACT 200 回合评估的失败分析与改进建议
 ├── notebooks/
 │   └── train_act_colab.ipynb              # 在 Colab 上训练 ACT（M3）
 ├── scripts/
 │   ├── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
 │   ├── policy_server.py                   # 推理服务：在 LeRobot venv 中加载策略，通过本地 TCP 提供动作
+│   ├── render_eval_cases.py               # 把评估中的失败回合和几个成功回合渲染成 mp4（带抓取特写）
 │   └── visualize_demos.py                 # 把采集的数据回放成动画（mp4 或窗口）
 ├── data/                                  # 采集的数据（不纳入 git）
 └── ros2_ws/                               # colcon 工作区
@@ -201,6 +204,7 @@ ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=
 - `episodes.jsonl`：每回合的方块初始/最终位置、是否成功、离目标距离、方块是否被抬起（区分“没抓起来”和“抓起后掉落/放偏”）、平均推理耗时；
 - `summary.json`：成功率；
 - `rollouts.npz`：全部帧，格式同 `demos.npz`，可以直接回放：`pixi run python scripts/visualize_demos.py --data data/eval/act_200_60k/rollouts.npz 0-4`。
+  失败回合和对照的成功回合可以用 `pixi run python scripts/render_eval_cases.py data/eval/act_200_60k` 渲染成带抓取特写的 mp4（输出在 `videos/` 子目录）。
 
 同一 seed 下每次评估的方块摆放序列相同，不同 checkpoint / 执行方式的成功率可以直接对比。
 
