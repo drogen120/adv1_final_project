@@ -174,7 +174,7 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 | batch / 步数 / 存档间隔 | 64 / 60k / 10k |
 | 其余 | LeRobot 0.6.1 默认（lr 1e-5，KL 权重 10） |
 
-输出写在 Drive 的 `so101_act/outputs/<run>/checkpoints/NNNNNN/pretrained_model`，最后一个单元把所有 `pretrained_model` 打包下载。在本机解压到工程根目录的 `outputs/`（不纳入 git）。
+训练曲线记录到 W&B 的 `so101-act` 项目（run 名为 `act_200` / `act_50`；需在 Colab Secrets 中设置 `WANDB_API_KEY`，不用时把 notebook 中的 `USE_WANDB` 改为 `False`）。checkpoint 不上传 W&B，输出写在 Drive 的 `so101_act/outputs/<run>/checkpoints/NNNNNN/pretrained_model`，最后一个单元把所有 `pretrained_model` 打包下载。在本机解压到工程根目录的 `outputs/`（不纳入 git）。
 
 ### 闭环评估（M4）
 
