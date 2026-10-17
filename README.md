@@ -34,7 +34,8 @@ adv1_final_project/
 ├── physical_ai_final_project_plan.md      # 方案选型与计划
 ├── pixi.toml / pixi.lock                  # 环境定义与锁定版本
 ├── docs/
-│   └── eval_act_200_failure_analysis.md   # ACT 200 回合评估的失败分析与改进建议
+│   ├── eval_act_200_failure_analysis.md   # ACT 200 回合评估的失败分析与改进建议
+│   └── eval_act_50_vs_200.md              # ACT 50 / 200 回合训练的闭环评估对比
 ├── notebooks/
 │   └── train_act_colab.ipynb              # 在 Colab 上训练 ACT（M3）
 ├── scripts/
