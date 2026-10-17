@@ -39,6 +39,7 @@ adv1_final_project/
 ├── notebooks/
 │   └── train_act_colab.ipynb              # 在 Colab 上训练 ACT（M3）
 ├── scripts/
+│   ├── check_expert.py                    # 不用 ROS，在整个随机范围上离线验证脚本专家（可模拟沿开合方向的误差）
 │   ├── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
 │   ├── policy_server.py                   # 推理服务：在 LeRobot venv 中加载策略，通过本地 TCP 提供动作
 │   ├── render_eval_cases.py               # 把评估中的失败回合和几个成功回合渲染成 mp4（带抓取特写）
@@ -130,6 +131,10 @@ ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=50 -p output_dir
 # 追加采集时要换一个 seed，否则会重复已有回合的方块摆放（编号会自动接着往下）
 # 现有数据：回合 0–49 用 seed 0，50–199 用 seed 1；评估用 seed 100
 
+# 专家抓取时把夹爪朝固定爪一侧平移 grasp_offset（默认 0.009 m，见 expert.GRASP_OFFSET），
+# 给固定爪留出余量；回合 0–199 是 offset 为 0、r ∈ [0.17, 0.25] m 时采集的。改动后先离线验证：
+#   pixi run python scripts/check_expert.py --grasp-offset 0.0 0.009 --tool-error -0.005 0 0.005
+
 # 导出为 npz（只导出成功的回合）
 ros2 run so101_mujoco export_dataset data/demos data/demos.npz
 ```
@@ -153,7 +158,7 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 
 想看专家演示时，也可以用带 viewer 的 sim（`--prefix mjpython ... -p use_viewer:=true -p sync_mode:=true`，`realtime_factor` 保持 1.0），再运行 `collect_demos`。
 
-**任务**：把绿色立方体（4 cm）抓起，放到红色方框（中心 (0.22, −0.12)）上。每次 `/reset` 时，方块在极坐标 r ∈ [0.17, 0.25] m、方位角 ∈ [5°, 40°] 的范围内随机生成，yaw 也随机。成功判据：方块中心与目标的水平距离 < 3 cm，且方块立在地面上（z < 3 cm）。
+**任务**：把绿色立方体（4 cm）抓起，放到红色方框（中心 (0.22, −0.12)）上。每次 `/reset` 时，方块在极坐标 r ∈ [0.18, 0.25] m、方位角 ∈ [5°, 40°] 的范围内随机生成，yaw 也随机。成功判据：方块中心与目标的水平距离 < 3 cm，且方块立在地面上（z < 3 cm）。
 
 **专家**（`expert.py`）：读取回合开始时的方块位姿，用数值 IK（MuJoCo 雅可比 + 阻尼最小二乘）规划整条轨迹：关节空间移动到方块上方 → 竖直下降 → 夹紧 → 抬起 → 平移到目标上方 → 下降 → 松开 → 抬起 → 回到初始姿态，共约 10 s（506 帧）。
 
@@ -238,7 +243,7 @@ pixi run python -m mujoco.viewer --mjcf=ros2_ws/src/so101_mujoco/models/robotstu
 | `use_viewer` | `false` | 是否打开 MuJoCo 可视化窗口（需 mjpython） |
 | `publish_clock` | `true` | 是否发布 `/clock` |
 | `randomize_box` | `true` | 重置时随机摆放方块（位置 + yaw） |
-| `box_radius_range` | `[0.17, 0.25]` | 方块到基座的水平距离范围（m） |
+| `box_radius_range` | `[0.18, 0.25]` | 方块到基座的水平距离范围（m） |
 | `box_azimuth_range` | `[5.0, 40.0]` | 方块方位角范围（度，从 +x 轴起算） |
 | `seed` | `0` | 随机种子（评估时固定它，便于复现） |
 | `sync_mode` | `false` | 同步模式：每发布一帧状态，就等待一条时间戳相同的 `/joint_command` 后再继续步进 |

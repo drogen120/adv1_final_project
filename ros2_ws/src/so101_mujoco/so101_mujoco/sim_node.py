@@ -63,7 +63,7 @@ class MujocoSim(Node):
         self.declare_parameter('use_viewer', False)
         self.declare_parameter('publish_clock', True)
         self.declare_parameter('randomize_box', True)
-        self.declare_parameter('box_radius_range', [0.17, 0.25])
+        self.declare_parameter('box_radius_range', [0.18, 0.25])
         self.declare_parameter('box_azimuth_range', [5.0, 40.0])
         self.declare_parameter('seed', 0)
         self.declare_parameter('sync_mode', False)

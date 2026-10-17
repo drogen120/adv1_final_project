@@ -36,7 +36,7 @@ from rclpy.serialization import serialize_message
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 
-from .expert import PickPlaceExpert, PlanningError, is_success
+from .expert import GRASP_OFFSET, PickPlaceExpert, PlanningError, is_success
 
 TOPICS = {
     'joint_states': 'sensor_msgs/msg/JointState',
@@ -66,10 +66,12 @@ class DemoCollector(Node):
         self.declare_parameter('control_rate', 50.0)          # Hz, must match sim publish_rate
         self.declare_parameter('settle_time', 0.5)            # s recorded after the plan ends
         self.declare_parameter('keep_failures', False)        # keep bags of failed episodes
+        self.declare_parameter('grasp_offset', GRASP_OFFSET)  # m, see expert.GRASP_OFFSET
 
         model = mujoco.MjModel.from_xml_path(self.get_parameter('model_path').value)
         self.target_pos = model.site('target').pos.copy()
-        self.expert = PickPlaceExpert(model, rate=self.get_parameter('control_rate').value)
+        self.expert = PickPlaceExpert(model, rate=self.get_parameter('control_rate').value,
+                                      grasp_offset=self.get_parameter('grasp_offset').value)
         self.settle_frames = int(round(self.get_parameter('settle_time').value
                                        * self.get_parameter('control_rate').value))
 
