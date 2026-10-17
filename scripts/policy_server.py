@@ -28,7 +28,8 @@ import time
 
 # From a `pixi shell`, PYTHONPATH points at the ROS environment's site-packages, whose numpy
 # and libomp clash with the venv's torch (OMP Error #15). Keep the two environments apart.
-sys.path = [p for p in sys.path if '.pixi' not in p]
+# Only drop site-packages: the venv may be built on pixi's Python, whose stdlib is under .pixi.
+sys.path = [p for p in sys.path if not ('.pixi' in p and 'site-packages' in p)]
 
 print = functools.partial(print, flush=True)  # the log is usually redirected to a file
 

@@ -26,7 +26,7 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 - macOS 没有 `timeout` 命令；`ros2 topic pub/echo/hz` 在脚本中需要自己加超时，否则会挂住。`ros2 topic pub --once` 要加 `-w 1` 等待订阅者。
 - 在 `sim_node.run()` 等函数内部写 `import mujoco.viewer` 会把 `mujoco` 变成局部变量导致 `UnboundLocalError`，导入放在文件顶部。
 - spin 线程在关闭时会抛 `ExternalShutdownException`，属正常现象，需捕获。
-- 从 pixi 环境启动 venv 的 Python 时，pixi 的 `PYTHONPATH` 会混入 ROS 环境的 numpy/libomp，torch 报 `OMP: Error #15`（`policy_server.py` 已处理）。输出重定向到文件时，print 要加 flush，否则脚本等不到日志里的就绪信息。
+- 从 pixi 环境启动 venv 的 Python 时，pixi 的 `PYTHONPATH` 会混入 ROS 环境的 numpy/libomp，torch 报 `OMP: Error #15`（`policy_server.py` 只剔除 `.pixi` 下的 site-packages；venv 可能是基于 pixi 的 Python 建的，标准库也在 `.pixi` 下，整段剔除会报 `No module named 'ctypes'`）。输出重定向到文件时，print 要加 flush，否则脚本等不到日志里的就绪信息。
 - **SO-101 工作空间**：末端（`gripperframe` site，x 轴为接近方向，z 轴为开合方向）最大水平伸展约 0.48 m；俯视姿态只能到 z≈0.06–0.09 m（受 `wrist_flex` 限位约束）；r < 0.16 m 时相机支架会与 `shoulder` 自碰撞。IK 不检查碰撞，改动随机范围后要用离线仿真重新验证。
 - `mj_jacSite` 依赖 `mj_comPos`：只调用 `mj_kinematics` 时，雅可比全为零。
 - 仿真时间转 `Time` 时，要先四舍五入到整数纳秒再 `divmod`；先取 `int(seconds)` 再对小数部分四舍五入，会在 x.9999999 处倒退 1 秒。
