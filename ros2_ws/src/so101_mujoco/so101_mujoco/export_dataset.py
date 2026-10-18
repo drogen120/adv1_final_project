@@ -6,10 +6,14 @@ One frame per recorded /joint_states message:
     action                         (N, 6)  /joint_command answering that joint state
     episode_index, frame_index     (N,)
     timestamp                      (N,)    s since the start of the episode
-Only successful episodes are exported. The .npz has no ROS dependencies, so it can be
-converted to a LeRobot dataset elsewhere (scripts/npz_to_lerobot.py).
+Only successful episodes are exported. Episodes with a clip_start in episodes.jsonl (the
+recovery demonstrations of collect_demos, whose first grasp missed on purpose) start at that
+frame. Several demo directories can be merged into one .npz. The .npz has no ROS
+dependencies, so it can be converted to a LeRobot dataset elsewhere
+(scripts/npz_to_lerobot.py).
 
     ros2 run so101_mujoco export_dataset data/demos data/demos.npz
+    ros2 run so101_mujoco export_dataset data/demos_offset data/demos_retry data/demos_offset_retry.npz
 """
 
 import argparse
@@ -49,16 +53,14 @@ def ordered(msg):
     return [by_name[n] for n in JOINT_NAMES]
 
 
-def episode_frames(topics):
+def episode_frames(topics, start=0):
     states = topics['joint_states']
     commands = {t: m for t, m in topics['joint_command']}
     boxes = topics['box_pose']
     box_stamps = np.array([t for t, _ in boxes])
 
     state, env, action, stamps = [], [], [], []
-    for t, msg in states:
-        if t not in commands:
-            continue
+    for t, msg in [s for s in states if s[0] in commands][start:]:
         # Latest box pose at or before this state (sim_node publishes both with one stamp).
         i = max(0, np.searchsorted(box_stamps, t, side='right') - 1)
         state.append(ordered(msg))
@@ -71,18 +73,21 @@ def episode_frames(topics):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('demo_dir', help='output_dir of collect_demos')
+    parser.add_argument('demo_dirs', nargs='+', help='output_dir(s) of collect_demos')
     parser.add_argument('output', help='.npz file to write')
     args = parser.parse_args()
 
-    with open(os.path.join(args.demo_dir, 'episodes.jsonl')) as f:
-        entries = [json.loads(line) for line in f if line.strip()]
+    entries = []
+    for demo_dir in args.demo_dirs:
+        with open(os.path.join(demo_dir, 'episodes.jsonl')) as f:
+            entries += [{**json.loads(line), 'dir': demo_dir} for line in f if line.strip()]
     entries = [e for e in entries if e['success'] and e['bag']]
 
     columns = {k: [] for k in ['observation_state', 'observation_environment_state', 'action',
                                'episode_index', 'frame_index', 'timestamp']}
     for new_index, entry in enumerate(entries):
-        state, env, action, stamps = episode_frames(read_bag(os.path.join(args.demo_dir, entry['bag'])))
+        bag = os.path.join(entry['dir'], entry['bag'])
+        state, env, action, stamps = episode_frames(read_bag(bag), entry.get('clip_start', 0))
         n = len(state)
         columns['observation_state'].append(state)
         columns['observation_environment_state'].append(env)
@@ -93,7 +98,8 @@ def main():
         dt = np.diff(stamps)
         irregular = np.abs(dt - np.median(dt)) > 0.5 * np.median(dt)
         note = f', WARNING: {irregular.sum()} irregular frame intervals' if irregular.any() else ''
-        print(f'{entry["bag"]}: {n} frames, {stamps[-1]:.2f} s{note}')
+        clip = f' (from frame {entry["clip_start"]})' if 'clip_start' in entry else ''
+        print(f'{bag}: {n} frames{clip}, {stamps[-1]:.2f} s{note}')
 
     arrays = {k: np.concatenate(v) for k, v in columns.items()}
     for k in ['observation_state', 'observation_environment_state', 'action', 'timestamp']:

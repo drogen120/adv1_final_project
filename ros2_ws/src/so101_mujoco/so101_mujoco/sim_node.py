@@ -12,7 +12,12 @@ Services
 With randomize_box (default), every reset puts the box at a random position and yaw on the
 floor, sampled in polar coordinates around the arm base from box_radius_range (m) and
 box_azimuth_range (deg). The default ranges are the part of the top-down grasp workspace
-where the scripted expert succeeds (see expert.py).
+where the scripted expert succeeds (see expert.py). box_rel_yaw_range (deg) narrows the yaw
+to a range of the relative grasp angle g, the angle between the expert's jaw closing
+direction and the direction perpendicular to the arm (see expert.grasp_yaw and
+scripts/grasp_metrics.py). The cube repeats every 90 degrees, so [-45, 45] (the default,
+which leaves the yaw sampling as it was) is every pose, and [35, 55] is |g| >= 35, the
+boundary where the expert switches between two pairs of faces.
 
 With sync_mode, after publishing the state stamped t the sim waits (up to sync_timeout s of
 wall time) for a /joint_command stamped t before stepping on, so a controller that answers
@@ -65,6 +70,7 @@ class MujocoSim(Node):
         self.declare_parameter('randomize_box', True)
         self.declare_parameter('box_radius_range', [0.18, 0.25])
         self.declare_parameter('box_azimuth_range', [5.0, 40.0])
+        self.declare_parameter('box_rel_yaw_range', [-45.0, 45.0])
         self.declare_parameter('seed', 0)
         self.declare_parameter('sync_mode', False)
         self.declare_parameter('sync_timeout', 1.0)      # s of wall time
@@ -136,7 +142,12 @@ class MujocoSim(Node):
         """Place the (free-floating) box upright at a random pose; height is kept from the model."""
         r = self.rng.uniform(*self.get_parameter('box_radius_range').value)
         azimuth = np.radians(self.rng.uniform(*self.get_parameter('box_azimuth_range').value))
-        yaw = self.rng.uniform(-np.pi, np.pi)
+        rel_yaw_range = list(self.get_parameter('box_rel_yaw_range').value)
+        if rel_yaw_range == [-45.0, 45.0]:
+            # Same draws as before box_rel_yaw_range existed, so old seeds give the same boxes.
+            yaw = self.rng.uniform(-np.pi, np.pi)
+        else:
+            yaw = azimuth + np.pi / 2 + np.radians(self.rng.uniform(*rel_yaw_range))
         adr = self.box_qpos_adr
         self.data.qpos[adr:adr + 2] = r * np.cos(azimuth), r * np.sin(azimuth)
         self.data.qpos[adr + 3:adr + 7] = np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)
