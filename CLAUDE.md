@@ -34,6 +34,7 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 - 仿真时间转 `Time` 时，要先四舍五入到整数纳秒再 `divmod`；先取 `int(seconds)` 再对小数部分四舍五入，会在 x.9999999 处倒退 1 秒。
 - 不要在步进物理时持有回调也需要的锁：Python 的 `Lock` 不保证公平，仿真跟不上目标速度时回调会被饿死（指令几秒不生效）。
 - 采集/评估要用 `sync_mode`；异步模式下，控制端卡顿会产生“动作变化、状态冻结”的坏数据。
+- **LeRobot ACT 默认不归一化 `observation.environment_state`**：默认 `normalization_mapping` 里没有 `ENV`，这类特征会按 `IDENTITY` 处理。训练时要传 `--policy.normalization_mapping='{"VISUAL": "MEAN_STD", "STATE": "MEAN_STD", "ENV": "MEAN_STD", "ACTION": "MEAN_STD"}'`（会整体替换默认映射，所以要写全）。现有 `outputs/` 里的模型都是没归一化时训练的。可以查 checkpoint 中 `policy_preprocessor.json` 的 `norm_map` 确认。
 - ROS 参数类型严格：浮点参数要写 `0.0`，写 `0` 会报 `InvalidParameterTypeException`。
 
 ## 约定

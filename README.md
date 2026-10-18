@@ -207,11 +207,14 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 | 输入 | `observation.state` + `observation.environment_state`（无图像） |
 | `chunk_size` / `n_action_steps` | 50 / 50（1 s 动作块） |
 | batch / 步数 / 存档间隔 | 64 / 60k / 10k |
+| 归一化 | STATE / ENV / ACTION 均为 `MEAN_STD`（`--policy.normalization_mapping`） |
 | 其余 | LeRobot 0.6.1 默认（lr 1e-5，KL 权重 10） |
 
 当前的模型是用加抓取偏移后的数据 `data/demos_offset.npz` 训练的（notebook 读取的文件名仍是 `demos.npz`，上传时改名即可）。本机 `outputs/act_200`、`outputs/act_50` 是用偏移数据训练的模型，`outputs/*_backup` 是用无偏移旧数据训练的模型；对应的评估结果在 `data/eval/` 下，命名方式相同。
 
-训练曲线记录到 W&B 的 `so101-act` 项目（run 名为 `act_200` / `act_50`；需在 Colab Secrets 中设置 `WANDB_API_KEY`，不用时把 notebook 中的 `USE_WANDB` 改为 `False`）。checkpoint 不上传 W&B，输出写在 Drive 的 `so101_act/outputs/<run>/checkpoints/NNNNNN/pretrained_model`，最后一个单元把所有 `pretrained_model` 打包下载。在本机解压到工程根目录的 `outputs/`（不纳入 git）。
+这些模型都是在方块特征**未归一化**时训练的：ACT 默认的 `normalization_mapping` 只有 `VISUAL / STATE / ACTION`，`observation.environment_state` 的类型是 `ENV`，被当作 `IDENTITY` 处理（统计量照样会写进 checkpoint，只是没有用上）。notebook 现在显式加上了 `ENV`，200 回合的 run 改名为 `act_200_envnorm`，不会覆盖 Drive 上旧的 `act_200`。归一化方式存在 checkpoint 的 `policy_preprocessor.json` 里（`norm_map`），`policy_server.py` 会照它处理，新旧模型都不用改推理代码；但旧权重不能靠改这个 json 切换成归一化输入，必须重新训练。
+
+训练曲线记录到 W&B 的 `so101-act` 项目（run 名为 `act_200_envnorm` / `act_50`，此前的 run 为 `act_200`；需在 Colab Secrets 中设置 `WANDB_API_KEY`，不用时把 notebook 中的 `USE_WANDB` 改为 `False`）。checkpoint 不上传 W&B，输出写在 Drive 的 `so101_act/outputs/<run>/checkpoints/NNNNNN/pretrained_model`，最后一个单元把所有 `pretrained_model` 打包下载。在本机解压到工程根目录的 `outputs/`（不纳入 git）。
 
 ### 闭环评估（M4）
 
