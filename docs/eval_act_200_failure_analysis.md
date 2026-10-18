@@ -1,10 +1,12 @@
 # ACT（200 回合）闭环评估：失败原因分析与改进建议
 
+> 本文的模型和评估都是在专家加抓取偏移之前得到的（无偏移数据，r 下限 0.17 m）。之后 `outputs/act_*` 和 `data/eval/act_200_*` 换成了用偏移数据训练的新结果，所以本文的旧结果改到了 `*_backup` 目录下。加偏移之后的评估见 `docs/eval_act_offset.md`。
+
 ## 1. 评估设置与总体结果
 
-- 策略：ACT 基线（state + environment_state，无图像），200 回合示教数据，checkpoint `outputs/act_200/checkpoints/060000`，默认执行方式（`chunk_size = n_action_steps = 50`，不使用时间集成）。
+- 策略：ACT 基线（state + environment_state，无图像），200 回合示教数据，checkpoint `outputs/act_200_backup/checkpoints/060000`，默认执行方式（`chunk_size = n_action_steps = 50`，不使用时间集成）。
 - 评估：`policy_eval`，`sim_node` 同步模式，seed 100（训练没用过的方块摆放），50 回合，每回合 600 帧（12 s）。
-- 数据：`data/eval/act_200_60k/`（`summary.json`、`episodes.jsonl`、`rollouts.npz`）。
+- 数据：`data/eval/act_200_60k_backup/`（`summary.json`、`episodes.jsonl`、`rollouts.npz`）。
 
 | 指标 | 结果 |
 |---|---|
@@ -116,10 +118,10 @@ offset ≈ 0.008–0.010 m
 用 `scripts/render_eval_cases.py` 生成了两次失败和三次成功的回放视频。左侧是总览相机，右上角的小窗是方块初始位置的特写，从外侧对着机械臂底座看；右侧是各关节的状态和指令曲线，以及方块高度。
 
 ```bash
-pixi run python scripts/render_eval_cases.py data/eval/act_200_60k
+pixi run python scripts/render_eval_cases.py data/eval/act_200_60k_backup
 ```
 
-输出在 `data/eval/act_200_60k/videos/`（`data/` 不纳入 git）：
+输出在 `data/eval/act_200_60k_backup/videos/`（`data/` 不纳入 git）：
 
 | 文件 | 内容 |
 |---|---|

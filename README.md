@@ -1,6 +1,6 @@
 # SO-101 MuJoCo × ROS 2：模仿学习课程大作业
 
-Physical AI 课程期末作业。在 MuJoCo 中仿真 SO-101 机械臂，通过 ROS 2 连接仿真、采集示教数据，用 LeRobot（ACT 策略）训练模型，最后用训练好的模型在仿真中控制机械臂完成任务（目标：pick-and-place，降级方案：reaching）。
+Physical AI 课程期末作业。在 MuJoCo 中仿真 SO-101 机械臂，通过 ROS 2 连接仿真、采集示教数据，用 LeRobot（ACT 策略）训练模型，最后用训练好的模型在仿真中闭环控制机械臂完成 pick-and-place 任务。
 
 详细的方案选型与计划见 [physical_ai_final_project_plan.md](physical_ai_final_project_plan.md)。
 
@@ -11,9 +11,32 @@ Physical AI 课程期末作业。在 MuJoCo 中仿真 SO-101 机械臂，通过 
 | M0 环境 | Mac 上跑通 ROS 2 与 MuJoCo，加载 SO-101 | ✅ 完成 |
 | M1 接口 | MuJoCo 节点发布 `/joint_states`，接收 `/joint_command` | ✅ 完成 |
 | M2 数据 | 脚本策略录制 rosbag，转换为 LeRobot 数据集 | ✅ 完成 |
-| M3 训练 | 在 Colab 上训练 ACT（状态输入） | ⏳ 进行中（数据 200 回合，训练 notebook 就绪） |
-| M4 闭环 | 策略节点控制仿真中的 SO-101，统计成功率 | ⏳ 评估节点与推理服务已打通 |
-| M5 收尾 | 升级任务、整理报告与演示视频 | — |
+| M3 训练 | 在 Colab 上训练 ACT（状态输入），对比 50 / 200 回合 | ✅ 完成 |
+| M4 闭环 | 策略节点控制仿真中的 SO-101，统计成功率 | ✅ 完成（最好 49/50，见下文“结果”） |
+| M5 收尾 | 整理报告与演示视频；可选改进与扩展 | ⏳ 进行中 |
+
+## 结果
+
+ACT（关节角 + 方块特征，无图像），seed 100 的 50 个回合，`sim_node` 同步模式下闭环评估：
+
+| 模型 | 训练数据 | checkpoint | 成功率 | 成功回合的放置误差（平均） |
+|---|---|---|---|---|
+| act_50 | 专家无抓取偏移，前 50 回合 | 60k | 30/50 = 60% | 0.69 cm |
+| act_200 | 专家无抓取偏移，200 回合 | 60k | 48/50 = 96% | 0.70 cm |
+| act_200（偏移） | 专家抓取偏移 9 mm，200 回合 | 40k | **49/50 = 98%** | 0.88 cm |
+| act_200（偏移） | 同上 | 60k | 47/50 = 94% | 0.66 cm |
+
+- 所有失败都发生在抓取阶段（方块没有被抬起）；只要抓起来，都能放到目标上。
+- 数据量从 50 增加到 200 回合，成功率从 60% 提升到 96%，逐回合配对的差异显著（18:0）。
+- 失败分析发现，专家抓取时固定爪离方块只有约 0.6 mm，没有给模仿误差留余量。专家加了 9 mm 偏移后，这类失败消失了；剩下的失败集中在相对抓取角接近 ±45° 的摆放上：专家在这里换一对侧面抓，抓取方向跳 90°，策略把两种抓法“平均”了。
+- 偏移模型的 40k 与 60k 在成功率上的差异不显著（p = 0.5），60k 的放置更准。
+- 偏移模型的 r 下限是 0.18 m（之前是 0.17 m），所以评估摆放与前两行只是近似配对。
+
+详细分析：
+
+- [docs/eval_act_200_failure_analysis.md](docs/eval_act_200_failure_analysis.md)：act_200 的失败原因（固定爪压在方块顶面）与改进建议
+- [docs/eval_act_50_vs_200.md](docs/eval_act_50_vs_200.md)：50 / 200 回合的对比
+- [docs/eval_act_offset.md](docs/eval_act_offset.md)：加抓取偏移后的评估，以及 ±45° 抓法切换处的新失败机制
 
 ## 环境
 
@@ -131,8 +154,8 @@ ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:
 ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=50 -p output_dir:=data/demos
 
 # 追加采集时要换一个 seed，否则会重复已有回合的方块摆放（编号会自动接着往下）
-# 现有数据：回合 0–49 用 seed 0，50–199 用 seed 1；评估用 seed 100
-# 加抓取偏移后的数据：data/demos_offset（seed 2，200 回合）→ data/demos_offset.npz
+# 无偏移的旧数据：回合 0–49 用 seed 0，50–199 用 seed 1（data/demos → data/demos.npz）；评估用 seed 100
+# 加抓取偏移后的数据（当前使用）：data/demos_offset（seed 2，200 回合）→ data/demos_offset.npz
 
 # 专家抓取时把夹爪朝固定爪一侧平移 grasp_offset（默认 0.009 m，见 expert.GRASP_OFFSET），
 # 给固定爪留出余量；回合 0–199 是 offset 为 0、r ∈ [0.17, 0.25] m 时采集的。改动后先离线验证：
@@ -185,6 +208,8 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 | `chunk_size` / `n_action_steps` | 50 / 50（1 s 动作块） |
 | batch / 步数 / 存档间隔 | 64 / 60k / 10k |
 | 其余 | LeRobot 0.6.1 默认（lr 1e-5，KL 权重 10） |
+
+当前的模型是用加抓取偏移后的数据 `data/demos_offset.npz` 训练的（notebook 读取的文件名仍是 `demos.npz`，上传时改名即可）。本机 `outputs/act_200`、`outputs/act_50` 是用偏移数据训练的模型，`outputs/*_backup` 是用无偏移旧数据训练的模型；对应的评估结果在 `data/eval/` 下，命名方式相同。
 
 训练曲线记录到 W&B 的 `so101-act` 项目（run 名为 `act_200` / `act_50`；需在 Colab Secrets 中设置 `WANDB_API_KEY`，不用时把 notebook 中的 `USE_WANDB` 改为 `False`）。checkpoint 不上传 W&B，输出写在 Drive 的 `so101_act/outputs/<run>/checkpoints/NNNNNN/pretrained_model`，最后一个单元把所有 `pretrained_model` 打包下载。在本机解压到工程根目录的 `outputs/`（不纳入 git）。
 

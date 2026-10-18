@@ -9,9 +9,9 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 - M2 已完成：`scene_pick_place.xml`（4 cm 立方体，重置时随机摆放）、IK 脚本专家（`expert.py`）、`collect_demos`（同步模式下录制 rosbag）、`export_dataset`（bag → npz）、`scripts/npz_to_lerobot.py`（npz → LeRobot 0.6.1 数据集，ACT 冒烟训练已通过）。数据在 `data/`（不纳入 git）。
 - 数据已补采到 200 回合（0–49 用 seed 0，50–199 用 seed 1；追加采集必须换 seed，评估用 seed 100）。
 - 按失败分析 4.1 改了专家（抓取点朝固定爪偏移 9 mm，`box_radius_range` 下限改为 0.18 m），用 seed 2 重新采集了 200 回合：`data/demos_offset/` → `data/demos_offset.npz`（200/200 成功）。旧数据 `data/demos*` 是偏移 0、r 从 0.17 m 起采集的，两者不要混用。
-- M3 进行中：ACT 基线（state + environment_state，无图像），用 `notebooks/train_act_colab.ipynb` 在 Colab Pro 上训练，对比 50 / 200 回合。SmolVLA 只作为扩展阶段（需要先给 `sim_node` 加图像观测）。
+- M3、M4 已完成（M5：报告与演示视频进行中）。M3：ACT 基线（state + environment_state，无图像），用 `notebooks/train_act_colab.ipynb` 在 Colab Pro 上训练，对比 50 / 200 回合。SmolVLA 只作为扩展阶段（需要先给 `sim_node` 加图像观测）。
 - 偏移数据训练的 ACT（seed 100 评估）：40k 49/50、60k 47/50，差异不显著。剩下的失败都在相对抓取角 g ≈ +45° 处（专家在这里换一对侧面抓，抓取方向跳 90°，策略把两种抓法平均，手腕少转约 30°），见 `docs/eval_act_offset.md`；指标用 `scripts/grasp_metrics.py` 计算。
-- M4 链路已打通：`scripts/policy_server.py`（`.venv-lerobot` 中运行，本地 TCP + 每行一个 JSON）+ `policy_eval` 节点（sync_mode，等同一时间戳的 `/box_pose` 到齐后再构造观测）。
+- M4：`scripts/policy_server.py`（`.venv-lerobot` 中运行，本地 TCP + 每行一个 JSON）+ `policy_eval` 节点（sync_mode，等同一时间戳的 `/box_pose` 到齐后再构造观测）。
 
 ## 环境与命令
 

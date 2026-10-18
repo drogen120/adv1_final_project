@@ -1,5 +1,7 @@
 # ACT：50 回合与 200 回合示教数据的对比
 
+> 本文的模型和评估都是在专家加抓取偏移之前得到的（无偏移数据，r 下限 0.17 m）。之后 `outputs/act_*` 和 `data/eval/act_200_*` 换成了用偏移数据训练的新结果，所以本文的旧结果改到了 `*_backup` 目录下。加偏移之后的评估见 `docs/eval_act_offset.md`。
+
 ## 1. 实验设置
 
 两个模型的设置完全相同，只有训练数据量不同：
@@ -9,12 +11,12 @@
 | 训练数据 | 前 50 回合（seed 0），25 300 帧 | 全部 200 回合（seed 0 + seed 1），101 200 帧 |
 | 训练步数 / batch | 60k / 64 | 60k / 64 |
 | 约等于 epoch 数 | **≈152** | ≈38 |
-| 评估 checkpoint | `outputs/act_50/checkpoints/060000` | `outputs/act_200/checkpoints/060000` |
+| 评估 checkpoint | `outputs/act_50_backup/checkpoints/060000` | `outputs/act_200_backup/checkpoints/060000` |
 
 - 观测：关节角（6 维）+ 方块特征 `[x, y, z, cos 4yaw, sin 4yaw]`（5 维），无图像。`chunk_size = n_action_steps = 50`，不使用时间集成。
 - 评估：`policy_eval`，`sim_node` 同步模式，**seed 100**，50 回合，每回合 600 帧（12 s）。
 - 两次评估的方块初始位姿逐回合完全一致（已核对），所以可以**逐回合配对比较**。
-- 数据：`data/eval/act_50_60k/`、`data/eval/act_200_60k/`。
+- 数据：`data/eval/act_50_60k_backup/`、`data/eval/act_200_60k_backup/`。
 
 ## 2. 总体结果
 
@@ -121,10 +123,10 @@ act_50 的问题有两个：一是误差更大（标准差多约 45%），二是
 
 ```bash
 # 评估（终端 1 推理服务 + 终端 2 sim_node seed 100 + 终端 3 policy_eval，见 README）
-ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=data/eval/act_50_60k
+ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=data/eval/act_50_60k_backup
 
 # 渲染失败回合与对照的成功回合
-pixi run python scripts/render_eval_cases.py data/eval/act_50_60k
+pixi run python scripts/render_eval_cases.py data/eval/act_50_60k_backup
 ```
 
 本文中的开合方向偏差、首次接触刚体、训练覆盖距离等指标，是用 MuJoCo 正运动学和接触检测从 `rollouts.npz` 离线计算的（在 `observation_state` 上做正运动学，方块位姿取自 `observation_environment_state`）。
