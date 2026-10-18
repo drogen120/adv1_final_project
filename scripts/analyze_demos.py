@@ -8,7 +8,7 @@ variety reaches the trajectories the policy learns from. Reads the .npz written 
 `ros2 run so101_mujoco export_dataset`; writes PNGs and prints a summary.
 
     pixi run python scripts/analyze_demos.py                      # figures in data/analysis/
-    pixi run python scripts/analyze_demos.py --radius 0.17 0.25 --azimuth 5 40
+    pixi run python scripts/analyze_demos.py --radius 0.17 0.25   # demos 0-199 (r from 0.17 m)
 
 Pass the box_radius_range / box_azimuth_range the demos were collected with if they are
 not sim_node's defaults.
@@ -349,7 +349,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('npz', nargs='?', default=os.path.join(REPO, 'data', 'demos.npz'))
     parser.add_argument('--out', default=os.path.join(REPO, 'data', 'analysis'))
-    parser.add_argument('--radius', type=float, nargs=2, default=[0.17, 0.25],
+    parser.add_argument('--radius', type=float, nargs=2, default=[0.18, 0.25],
                         help='box_radius_range used for collection (m)')
     parser.add_argument('--azimuth', type=float, nargs=2, default=[5.0, 40.0],
                         help='box_azimuth_range used for collection (deg)')

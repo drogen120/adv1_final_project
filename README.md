@@ -1,6 +1,6 @@
 # SO-101 MuJoCo × ROS 2：模仿学习课程大作业
 
-Physical AI 课程期末作业。在 MuJoCo 中仿真 SO-101 机械臂，通过 ROS 2 连接仿真、采集示教数据，用 LeRobot（ACT 策略）训练模型，最后用训练好的模型在仿真中控制机械臂完成任务（目标：pick-and-place，降级方案：reaching）。
+Physical AI 课程期末作业。在 MuJoCo 中仿真 SO-101 机械臂，通过 ROS 2 连接仿真、采集示教数据，用 LeRobot（ACT 策略）训练模型，最后用训练好的模型在仿真中闭环控制机械臂完成 pick-and-place 任务。
 
 详细的方案选型与计划见 [physical_ai_final_project_plan.md](physical_ai_final_project_plan.md)。
 
@@ -11,9 +11,32 @@ Physical AI 课程期末作业。在 MuJoCo 中仿真 SO-101 机械臂，通过 
 | M0 环境 | Mac 上跑通 ROS 2 与 MuJoCo，加载 SO-101 | ✅ 完成 |
 | M1 接口 | MuJoCo 节点发布 `/joint_states`，接收 `/joint_command` | ✅ 完成 |
 | M2 数据 | 脚本策略录制 rosbag，转换为 LeRobot 数据集 | ✅ 完成 |
-| M3 训练 | 在 Colab 上训练策略 | ⏳ 下一步 |
-| M4 闭环 | 策略节点控制仿真中的 SO-101，统计成功率 | — |
-| M5 收尾 | 升级任务、整理报告与演示视频 | — |
+| M3 训练 | 在 Colab 上训练 ACT（状态输入），对比 50 / 200 回合 | ✅ 完成 |
+| M4 闭环 | 策略节点控制仿真中的 SO-101，统计成功率 | ✅ 完成（最好 49/50，见下文“结果”） |
+| M5 收尾 | 整理报告与演示视频；可选改进与扩展 | ⏳ 进行中 |
+
+## 结果
+
+ACT（关节角 + 方块特征，无图像），seed 100 的 50 个回合，`sim_node` 同步模式下闭环评估：
+
+| 模型 | 训练数据 | checkpoint | 成功率 | 成功回合的放置误差（平均） |
+|---|---|---|---|---|
+| act_50 | 专家无抓取偏移，前 50 回合 | 60k | 30/50 = 60% | 0.69 cm |
+| act_200 | 专家无抓取偏移，200 回合 | 60k | 48/50 = 96% | 0.70 cm |
+| act_200（偏移） | 专家抓取偏移 9 mm，200 回合 | 40k | **49/50 = 98%** | 0.88 cm |
+| act_200（偏移） | 同上 | 60k | 47/50 = 94% | 0.66 cm |
+
+- 所有失败都发生在抓取阶段（方块没有被抬起）；只要抓起来，都能放到目标上。
+- 数据量从 50 增加到 200 回合，成功率从 60% 提升到 96%，逐回合配对的差异显著（18:0）。
+- 失败分析发现，专家抓取时固定爪离方块只有约 0.6 mm，没有给模仿误差留余量。专家加了 9 mm 偏移后，这类失败消失了；剩下的失败集中在相对抓取角接近 ±45° 的摆放上：专家在这里换一对侧面抓，抓取方向跳 90°，策略把两种抓法“平均”了。
+- 偏移模型的 40k 与 60k 在成功率上的差异不显著（p = 0.5），60k 的放置更准。
+- 偏移模型的 r 下限是 0.18 m（之前是 0.17 m），所以评估摆放与前两行只是近似配对。
+
+详细分析：
+
+- [docs/eval_act_200_failure_analysis.md](docs/eval_act_200_failure_analysis.md)：act_200 的失败原因（固定爪压在方块顶面）与改进建议
+- [docs/eval_act_50_vs_200.md](docs/eval_act_50_vs_200.md)：50 / 200 回合的对比
+- [docs/eval_act_offset.md](docs/eval_act_offset.md)：加抓取偏移后的评估，以及 ±45° 抓法切换处的新失败机制
 
 ## 环境
 
@@ -33,8 +56,18 @@ adv1_final_project/
 ├── CLAUDE.md                              # 给 Claude Code 的项目说明
 ├── physical_ai_final_project_plan.md      # 方案选型与计划
 ├── pixi.toml / pixi.lock                  # 环境定义与锁定版本
+├── docs/
+│   ├── eval_act_200_failure_analysis.md   # ACT 200 回合评估的失败分析与改进建议
+│   ├── eval_act_50_vs_200.md              # ACT 50 / 200 回合训练的闭环评估对比
+│   └── eval_act_offset.md                 # 加抓取偏移后重新训练的 ACT（40k / 60k）评估与新的失败机制
+├── notebooks/
+│   └── train_act_colab.ipynb              # 在 Colab 上训练 ACT（M3）
 ├── scripts/
+│   ├── check_expert.py                    # 不用 ROS，在整个随机范围上离线验证脚本专家（可模拟沿开合方向的误差）
+│   ├── grasp_metrics.py                   # 评估的抓取指标（开合方向偏差、朝向误差、首次接触）与逐回合配对比较
 │   ├── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
+│   ├── policy_server.py                   # 推理服务：在 LeRobot venv 中加载策略，通过本地 TCP 提供动作
+│   ├── render_eval_cases.py               # 把评估中的失败回合和几个成功回合渲染成 mp4（带抓取特写）
 │   └── visualize_demos.py                 # 把采集的数据回放成动画（mp4 或窗口）
 ├── data/                                  # 采集的数据（不纳入 git）
 └── ros2_ws/                               # colcon 工作区
@@ -55,7 +88,8 @@ adv1_final_project/
                 ├── kinematics.py          # 俯视抓取的数值 IK
                 ├── expert.py              # 脚本专家：规划整条抓取放置轨迹
                 ├── collect_demos.py       # 采集节点：专家示教 → 每回合一个 rosbag
-                └── export_dataset.py      # rosbag → 对齐的训练帧（.npz）
+                ├── export_dataset.py      # rosbag → 对齐的训练帧（.npz）
+                └── policy_eval.py         # 闭环评估节点：调用推理服务控制仿真，统计成功率
 ```
 
 ## 安装
@@ -119,6 +153,14 @@ ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:
 # 终端 2：采集 50 个回合（每回合约 10 s 仿真时间，在 M1 上约 4.5 s）
 ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=50 -p output_dir:=data/demos
 
+# 追加采集时要换一个 seed，否则会重复已有回合的方块摆放（编号会自动接着往下）
+# 无偏移的旧数据：回合 0–49 用 seed 0，50–199 用 seed 1（data/demos → data/demos.npz）；评估用 seed 100
+# 加抓取偏移后的数据（当前使用）：data/demos_offset（seed 2，200 回合）→ data/demos_offset.npz
+
+# 专家抓取时把夹爪朝固定爪一侧平移 grasp_offset（默认 0.009 m，见 expert.GRASP_OFFSET），
+# 给固定爪留出余量；回合 0–199 是 offset 为 0、r ∈ [0.17, 0.25] m 时采集的。改动后先离线验证：
+#   pixi run python scripts/check_expert.py --grasp-offset 0.0 0.009 --tool-error -0.005 0 0.005
+
 # 导出为 npz（只导出成功的回合）
 ros2 run so101_mujoco export_dataset data/demos data/demos.npz
 ```
@@ -142,7 +184,7 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 
 想看专家演示时，也可以用带 viewer 的 sim（`--prefix mjpython ... -p use_viewer:=true -p sync_mode:=true`，`realtime_factor` 保持 1.0），再运行 `collect_demos`。
 
-**任务**：把绿色立方体（4 cm）抓起，放到红色方框（中心 (0.22, −0.12)）上。每次 `/reset` 时，方块在极坐标 r ∈ [0.17, 0.25] m、方位角 ∈ [5°, 40°] 的范围内随机生成，yaw 也随机。成功判据：方块中心与目标的水平距离 < 3 cm，且方块立在地面上（z < 3 cm）。
+**任务**：把绿色立方体（4 cm）抓起，放到红色方框（中心 (0.22, −0.12)）上。每次 `/reset` 时，方块在极坐标 r ∈ [0.18, 0.25] m、方位角 ∈ [5°, 40°] 的范围内随机生成，yaw 也随机。成功判据：方块中心与目标的水平距离 < 3 cm，且方块立在地面上（z < 3 cm）。
 
 **专家**（`expert.py`）：读取回合开始时的方块位姿，用数值 IK（MuJoCo 雅可比 + 阻尼最小二乘）规划整条轨迹：关节空间移动到方块上方 → 竖直下降 → 夹紧 → 抬起 → 平移到目标上方 → 下降 → 松开 → 抬起 → 回到初始姿态，共约 10 s（506 帧）。
 
@@ -155,6 +197,51 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 | `observation.state` | 6 | 关节角（rad），顺序同下文关节顺序 |
 | `observation.environment_state` | 5 | 方块 `[x, y, z, cos 4ψ, sin 4ψ]`（ψ 为 yaw；立方体每 90° 对称，抓取方向只取决于 ψ mod 90°） |
 | `action` | 6 | 下发的关节目标角（rad） |
+
+### 训练策略（M3）
+
+在 Colab（GPU）上运行 `notebooks/train_act_colab.ipynb`：把 `data/demos.npz` 和 `scripts/npz_to_lerobot.py` 上传到 Google Drive 的 `so101_act/` 目录，按顺序运行即可。notebook 会转换出两个数据集（全部 200 回合 / 前 50 回合），各训练一个 ACT：
+
+| 设置 | 值 |
+|---|---|
+| 输入 | `observation.state` + `observation.environment_state`（无图像） |
+| `chunk_size` / `n_action_steps` | 50 / 50（1 s 动作块） |
+| batch / 步数 / 存档间隔 | 64 / 60k / 10k |
+| 其余 | LeRobot 0.6.1 默认（lr 1e-5，KL 权重 10） |
+
+当前的模型是用加抓取偏移后的数据 `data/demos_offset.npz` 训练的（notebook 读取的文件名仍是 `demos.npz`，上传时改名即可）。本机 `outputs/act_200`、`outputs/act_50` 是用偏移数据训练的模型，`outputs/*_backup` 是用无偏移旧数据训练的模型；对应的评估结果在 `data/eval/` 下，命名方式相同。
+
+训练曲线记录到 W&B 的 `so101-act` 项目（run 名为 `act_200` / `act_50`；需在 Colab Secrets 中设置 `WANDB_API_KEY`，不用时把 notebook 中的 `USE_WANDB` 改为 `False`）。checkpoint 不上传 W&B，输出写在 Drive 的 `so101_act/outputs/<run>/checkpoints/NNNNNN/pretrained_model`，最后一个单元把所有 `pretrained_model` 打包下载。在本机解压到工程根目录的 `outputs/`（不纳入 git）。
+
+### 闭环评估（M4）
+
+LeRobot 和 torch 不装进 pixi 环境：策略在独立 venv 中由 `scripts/policy_server.py` 加载，ROS 节点 `policy_eval` 通过本地 TCP（每行一个 JSON）向它请求动作。
+
+```bash
+# 一次性：建 LeRobot venv（工程根目录下的 .venv-lerobot，不纳入 git）
+uv venv -p 3.12 .venv-lerobot
+VIRTUAL_ENV=.venv-lerobot uv pip install 'lerobot[dataset,training]==0.6.1'
+
+# 终端 1：推理服务（可以在 pixi shell 里启动，脚本会屏蔽 pixi 的 PYTHONPATH）
+.venv-lerobot/bin/python scripts/policy_server.py outputs/act_200/checkpoints/060000/pretrained_model
+#   时间集成：加 --temporal-ensemble 0.01；改每块执行步数：--n-action-steps 25
+
+# 终端 2：仿真，同步模式，用训练没用过的 seed
+ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:=0.0 -p seed:=100
+
+# 终端 3：评估 50 个回合（每回合 600 帧 = 12 s 仿真时间，在 M1 上约 5 s）
+ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=data/eval/act_200_60k
+```
+
+`policy_eval` 对每条 `/joint_states` 等到同一时间戳的 `/box_pose` 后，按与 `export_dataset` 相同的方式构造观测（关节角 + `expert.box_features`），请求动作并以相同时间戳发布 `/joint_command`。输出：
+
+- `episodes.jsonl`：每回合的方块初始/最终位置、是否成功、离目标距离、方块是否被抬起（区分“没抓起来”和“抓起后掉落/放偏”）、平均推理耗时；
+- `summary.json`：成功率；
+- `rollouts.npz`：全部帧，格式同 `demos.npz`，可以直接回放：`pixi run python scripts/visualize_demos.py --data data/eval/act_200_60k/rollouts.npz 0-4`。
+  失败回合和对照的成功回合可以用 `pixi run python scripts/render_eval_cases.py data/eval/act_200_60k` 渲染成带抓取特写的 mp4（输出在 `videos/` 子目录）。
+  抓取指标和两次评估的逐回合配对比较：`pixi run python scripts/grasp_metrics.py data/eval/act_200_40k data/eval/act_200_60k`。
+
+同一 seed 下每次评估的方块摆放序列相同，不同 checkpoint / 执行方式的成功率可以直接对比（改了 `box_radius_range` 后，各回合的方位角和朝向不变，只有 r 会变）。
 
 ### 只看模型（不启动 ROS）
 
@@ -185,7 +272,7 @@ pixi run python -m mujoco.viewer --mjcf=ros2_ws/src/so101_mujoco/models/robotstu
 | `use_viewer` | `false` | 是否打开 MuJoCo 可视化窗口（需 mjpython） |
 | `publish_clock` | `true` | 是否发布 `/clock` |
 | `randomize_box` | `true` | 重置时随机摆放方块（位置 + yaw） |
-| `box_radius_range` | `[0.17, 0.25]` | 方块到基座的水平距离范围（m） |
+| `box_radius_range` | `[0.18, 0.25]` | 方块到基座的水平距离范围（m） |
 | `box_azimuth_range` | `[5.0, 40.0]` | 方块方位角范围（度，从 +x 轴起算） |
 | `seed` | `0` | 随机种子（评估时固定它，便于复现） |
 | `sync_mode` | `false` | 同步模式：每发布一帧状态，就等待一条时间戳相同的 `/joint_command` 后再继续步进 |

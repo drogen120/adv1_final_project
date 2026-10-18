@@ -17,6 +17,11 @@ Z_HOVER = 0.06    # m, tool height while moving; top-down poses reach only ~0.06
                   #    for 0.14 m < r < 0.26 m (wrist_flex hits its limit above that)
 Z_GRASP = 0.015   # m, tool (jaw tip) height when closing on the box
 Z_PLACE = 0.02    # m, tool height when releasing the box (drops it ~5 mm)
+GRASP_OFFSET = 0.009  # m, tool shift from the box centre towards the fixed jaw when grasping.
+                      #    With the tool centred, the open fixed jaw clears the box face by
+                      #    only ~0.6 mm, so a policy a few mm off lands that jaw on the box
+                      #    top. Closing pushes the box against the fixed jaw, so once held it
+                      #    is centred on the tool again and the place pose needs no shift.
 
 
 def smoothstep(n):
@@ -55,10 +60,11 @@ class PlanningError(RuntimeError):
 
 class PickPlaceExpert:
 
-    def __init__(self, model, rate=50.0, max_ik_error=3e-3):
+    def __init__(self, model, rate=50.0, max_ik_error=3e-3, grasp_offset=GRASP_OFFSET):
         self.ik = TopDownIK(model)
         self.dt = 1.0 / rate
         self.max_ik_error = max_ik_error
+        self.grasp_offset = grasp_offset
 
     def _frames(self, seconds):
         return max(2, int(round(seconds / self.dt)) + 1)
@@ -96,8 +102,10 @@ class PickPlaceExpert:
         # Carry the box turning with the arm, so wrist_roll stays put on the way.
         place_yaw = yaw + np.arctan2(target_pos[1], target_pos[0]) - np.arctan2(box_pos[1], box_pos[0])
 
-        above_box = np.array([box_pos[0], box_pos[1], Z_HOVER])
-        at_box = np.array([box_pos[0], box_pos[1], Z_GRASP])
+        # The tool z axis (jaw closing direction) points from the fixed to the moving jaw.
+        grasp_xy = box_pos[:2] - self.grasp_offset * np.array([np.cos(yaw), np.sin(yaw)])
+        above_box = np.array([*grasp_xy, Z_HOVER])
+        at_box = np.array([*grasp_xy, Z_GRASP])
         above_target = np.array([target_pos[0], target_pos[1], Z_HOVER])
         at_target = np.array([target_pos[0], target_pos[1], Z_PLACE])
 

@@ -17,3 +17,7 @@ __pycache__/
 
 # collected demonstrations and datasets
 data/
+
+# LeRobot venv (kept out of pixi) and trained checkpoints
+.venv-lerobot/
+outputs/

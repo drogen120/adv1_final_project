@@ -7,7 +7,11 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 
 - M0（环境）、M1（`sim_node`：`/joint_states`、`/joint_command`、`/box_pose`、`/clock`、`/reset`）已完成并验证。
 - M2 已完成：`scene_pick_place.xml`（4 cm 立方体，重置时随机摆放）、IK 脚本专家（`expert.py`）、`collect_demos`（同步模式下录制 rosbag）、`export_dataset`（bag → npz）、`scripts/npz_to_lerobot.py`（npz → LeRobot 0.6.1 数据集，ACT 冒烟训练已通过）。数据在 `data/`（不纳入 git）。
-- 下一步 M3：训练 ACT（state + environment_state，无图像）。M4 的策略节点要在 `sync_mode` 下运行，对每条 `/joint_states` 回复指令，并用 `expert.box_features` 计算方块特征。
+- 数据已补采到 200 回合（0–49 用 seed 0，50–199 用 seed 1；追加采集必须换 seed，评估用 seed 100）。
+- 按失败分析 4.1 改了专家（抓取点朝固定爪偏移 9 mm，`box_radius_range` 下限改为 0.18 m），用 seed 2 重新采集了 200 回合：`data/demos_offset/` → `data/demos_offset.npz`（200/200 成功）。旧数据 `data/demos*` 是偏移 0、r 从 0.17 m 起采集的，两者不要混用。
+- M3、M4 已完成（M5：报告与演示视频进行中）。M3：ACT 基线（state + environment_state，无图像），用 `notebooks/train_act_colab.ipynb` 在 Colab Pro 上训练，对比 50 / 200 回合。SmolVLA 只作为扩展阶段（需要先给 `sim_node` 加图像观测）。
+- 偏移数据训练的 ACT（seed 100 评估）：40k 49/50、60k 47/50，差异不显著。剩下的失败都在相对抓取角 g ≈ +45° 处（专家在这里换一对侧面抓，抓取方向跳 90°，策略把两种抓法平均，手腕少转约 30°），见 `docs/eval_act_offset.md`；指标用 `scripts/grasp_metrics.py` 计算。
+- M4：`scripts/policy_server.py`（`.venv-lerobot` 中运行，本地 TCP + 每行一个 JSON）+ `policy_eval` 节点（sync_mode，等同一时间戳的 `/box_pose` 到齐后再构造观测）。
 
 ## 环境与命令
 
@@ -24,7 +28,8 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 - macOS 没有 `timeout` 命令；`ros2 topic pub/echo/hz` 在脚本中需要自己加超时，否则会挂住。`ros2 topic pub --once` 要加 `-w 1` 等待订阅者。
 - 在 `sim_node.run()` 等函数内部写 `import mujoco.viewer` 会把 `mujoco` 变成局部变量导致 `UnboundLocalError`，导入放在文件顶部。
 - spin 线程在关闭时会抛 `ExternalShutdownException`，属正常现象，需捕获。
-- **SO-101 工作空间**：末端（`gripperframe` site，x 轴为接近方向，z 轴为开合方向）最大水平伸展约 0.48 m；俯视姿态只能到 z≈0.06–0.09 m（受 `wrist_flex` 限位约束）；r < 0.16 m 时相机支架会与 `shoulder` 自碰撞。IK 不检查碰撞，改动随机范围后要用离线仿真重新验证。
+- 从 pixi 环境启动 venv 的 Python 时，pixi 的 `PYTHONPATH` 会混入 ROS 环境的 numpy/libomp，torch 报 `OMP: Error #15`（`policy_server.py` 只剔除 `.pixi` 下的 site-packages；venv 可能是基于 pixi 的 Python 建的，标准库也在 `.pixi` 下，整段剔除会报 `No module named 'ctypes'`）。输出重定向到文件时，print 要加 flush，否则脚本等不到日志里的就绪信息。
+- **SO-101 工作空间**：末端（`gripperframe` site，x 轴为接近方向，z 轴为开合方向）最大水平伸展约 0.48 m；俯视姿态只能到 z≈0.06–0.09 m（受 `wrist_flex` 限位约束）；r < 0.16 m 时相机支架会与 `shoulder` 自碰撞（r ≈ 0.17 m 的部分朝向下也会，抓取偏移后更明显，所以随机范围下限是 0.18 m）。IK 不检查碰撞，改动随机范围或专家后要用 `scripts/check_expert.py` 离线重新验证。
 - `mj_jacSite` 依赖 `mj_comPos`：只调用 `mj_kinematics` 时，雅可比全为零。
 - 仿真时间转 `Time` 时，要先四舍五入到整数纳秒再 `divmod`；先取 `int(seconds)` 再对小数部分四舍五入，会在 x.9999999 处倒退 1 秒。
 - 不要在步进物理时持有回调也需要的锁：Python 的 `Lock` 不保证公平，仿真跟不上目标速度时回调会被饿死（指令几秒不生效）。
@@ -36,4 +41,4 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 - `sim_node` 中只有主（仿真）线程访问 `self.data`。ROS 回调（executor 线程）把指令和重置请求放进 `self.pending`（`Condition`，只在拷贝时短暂持有），由主循环在每次步进前通过 `_apply_requests()` 应用。
 - 控制端发布的 `/joint_command` 时间戳等于它所回应的 `/joint_states` 的时间戳（同步模式和数据导出都依赖这一点）；没有新指令时发空指令作为应答。
 - 仿真时间 = `time_offset + data.time`，重置时累加 offset，保证 `/clock` 单调递增（rosbag 依赖这一点）。
-- 依赖用 `pixi add ros-jazzy-<pkg>` / `pixi add --pypi <pkg>` 添加，不用 rosdep。LeRobot（含 torch）暂不装进 ROS 环境，避免与 RoboStack 的 numpy 等版本冲突；训练在 Colab 上进行（本机 MPS 上 ACT 约 5 step/s @ batch 8，可作备选）。本地测试 LeRobot 时，用 uv 在 pixi 之外单独建 venv（`lerobot[dataset,training]==0.6.1`）。
+- 依赖用 `pixi add ros-jazzy-<pkg>` / `pixi add --pypi <pkg>` 添加，不用 rosdep。LeRobot（含 torch）暂不装进 ROS 环境，避免与 RoboStack 的 numpy 等版本冲突；训练在 Colab 上进行（本机 MPS 上 ACT 约 5 step/s @ batch 8，可作备选）。本地测试 / 推理用工程下的 `.venv-lerobot`（uv 建的 venv，`lerobot[dataset,training]==0.6.1`，不纳入 git）。
