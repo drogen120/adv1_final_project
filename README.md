@@ -35,11 +35,13 @@ adv1_final_project/
 ├── pixi.toml / pixi.lock                  # 环境定义与锁定版本
 ├── docs/
 │   ├── eval_act_200_failure_analysis.md   # ACT 200 回合评估的失败分析与改进建议
-│   └── eval_act_50_vs_200.md              # ACT 50 / 200 回合训练的闭环评估对比
+│   ├── eval_act_50_vs_200.md              # ACT 50 / 200 回合训练的闭环评估对比
+│   └── eval_act_offset.md                 # 加抓取偏移后重新训练的 ACT（40k / 60k）评估与新的失败机制
 ├── notebooks/
 │   └── train_act_colab.ipynb              # 在 Colab 上训练 ACT（M3）
 ├── scripts/
 │   ├── check_expert.py                    # 不用 ROS，在整个随机范围上离线验证脚本专家（可模拟沿开合方向的误差）
+│   ├── grasp_metrics.py                   # 评估的抓取指标（开合方向偏差、朝向误差、首次接触）与逐回合配对比较
 │   ├── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
 │   ├── policy_server.py                   # 推理服务：在 LeRobot venv 中加载策略，通过本地 TCP 提供动作
 │   ├── render_eval_cases.py               # 把评估中的失败回合和几个成功回合渲染成 mp4（带抓取特写）
@@ -130,6 +132,7 @@ ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=50 -p output_dir
 
 # 追加采集时要换一个 seed，否则会重复已有回合的方块摆放（编号会自动接着往下）
 # 现有数据：回合 0–49 用 seed 0，50–199 用 seed 1；评估用 seed 100
+# 加抓取偏移后的数据：data/demos_offset（seed 2，200 回合）→ data/demos_offset.npz
 
 # 专家抓取时把夹爪朝固定爪一侧平移 grasp_offset（默认 0.009 m，见 expert.GRASP_OFFSET），
 # 给固定爪留出余量；回合 0–199 是 offset 为 0、r ∈ [0.17, 0.25] m 时采集的。改动后先离线验证：
@@ -211,8 +214,9 @@ ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=
 - `summary.json`：成功率；
 - `rollouts.npz`：全部帧，格式同 `demos.npz`，可以直接回放：`pixi run python scripts/visualize_demos.py --data data/eval/act_200_60k/rollouts.npz 0-4`。
   失败回合和对照的成功回合可以用 `pixi run python scripts/render_eval_cases.py data/eval/act_200_60k` 渲染成带抓取特写的 mp4（输出在 `videos/` 子目录）。
+  抓取指标和两次评估的逐回合配对比较：`pixi run python scripts/grasp_metrics.py data/eval/act_200_40k data/eval/act_200_60k`。
 
-同一 seed 下每次评估的方块摆放序列相同，不同 checkpoint / 执行方式的成功率可以直接对比。
+同一 seed 下每次评估的方块摆放序列相同，不同 checkpoint / 执行方式的成功率可以直接对比（改了 `box_radius_range` 后，各回合的方位角和朝向不变，只有 r 会变）。
 
 ### 只看模型（不启动 ROS）
 
