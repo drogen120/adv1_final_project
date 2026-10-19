@@ -11,6 +11,7 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 - 按失败分析 4.1 改了专家（抓取点朝固定爪偏移 9 mm，`box_radius_range` 下限改为 0.18 m），用 seed 2 重新采集了 200 回合：`data/demos_offset/` → `data/demos_offset.npz`（200/200 成功）。旧数据 `data/demos*` 是偏移 0、r 从 0.17 m 起采集的，两者不要混用。
 - M3、M4 已完成（M5：报告与演示视频进行中）。M3：ACT 基线（state + environment_state，无图像），用 `notebooks/train_act_colab.ipynb` 在 Colab Pro 上训练，对比 50 / 200 回合。SmolVLA 只作为扩展阶段（需要先给 `sim_node` 加图像观测）。
 - 偏移数据训练的 ACT（seed 100 评估）：40k 49/50、60k 47/50，差异不显著。剩下的失败都在相对抓取角 g ≈ +45° 处（专家在这里换一对侧面抓，抓取方向跳 90°，策略把两种抓法平均，手腕少转约 30°），见 `docs/eval_act_offset.md`；指标用 `scripts/grasp_metrics.py` 计算。
+- 重新抓取（进行中）：`expert.PickPlaceEpisode` 分段规划，抬起后检查方块，没抬起就重抓；`collect_demos` 可以用 `inject_failure_prob` 让第一次抓取故意失败（`wrist` / `offset` 两种，范围用 `scripts/check_retry.py` 离线选定），`episodes.jsonl` 的 `clip_start` 让 `export_dataset` 只导出重抓开始之后的帧。恢复数据：`data/demos_retry`（seed 3）。边界评估：sim 加 `box_rel_yaw_range:=[35.0,55.0]`（|g| ∈ [35°, 45°]）。不注入时 `plan()` / 采集结果和以前逐帧一致。
 - M4：`scripts/policy_server.py`（`.venv-lerobot` 中运行，本地 TCP + 每行一个 JSON）+ `policy_eval` 节点（sync_mode，等同一时间戳的 `/box_pose` 到齐后再构造观测）。
 
 ## 环境与命令
@@ -34,6 +35,8 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 - 仿真时间转 `Time` 时，要先四舍五入到整数纳秒再 `divmod`；先取 `int(seconds)` 再对小数部分四舍五入，会在 x.9999999 处倒退 1 秒。
 - 不要在步进物理时持有回调也需要的锁：Python 的 `Lock` 不保证公平，仿真跟不上目标速度时回调会被饿死（指令几秒不生效）。
 - 采集/评估要用 `sync_mode`；异步模式下，控制端卡顿会产生“动作变化、状态冻结”的坏数据。
+- **LeRobot ACT 默认不归一化 `observation.environment_state`**：默认 `normalization_mapping` 里没有 `ENV`，这类特征会按 `IDENTITY` 处理。训练时要传 `--policy.normalization_mapping='{"VISUAL": "MEAN_STD", "STATE": "MEAN_STD", "ENV": "MEAN_STD", "ACTION": "MEAN_STD"}'`（会整体替换默认映射，所以要写全）。现有 `outputs/` 里的模型都是没归一化时训练的。可以查 checkpoint 中 `policy_preprocessor.json` 的 `norm_map` 确认。
+- 现有策略没抓起来时会空手去目标、回到初始姿态，然后把整个任务**从头再做一遍**（初始姿态 + 方块在原处 = 回合开始时的观测）。所以评估的成功率取决于 `max_steps`（现在默认 900，以前是 600），比较时要看 `success_frame` / `successes_by_frame_600`。
 - ROS 参数类型严格：浮点参数要写 `0.0`，写 `0` 会报 `InvalidParameterTypeException`。
 
 ## 约定

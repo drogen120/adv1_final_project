@@ -16,6 +16,15 @@ the same stamp. Run the sim in sync_mode, with a seed the demonstrations did not
 
 <output_dir>/episodes.jsonl gets one line per episode, <output_dir>/rollouts.npz all the
 frames in the format of export_dataset (so scripts/visualize_demos.py --data can replay them).
+grasp_attempts counts how often the policy closed the gripper low down next to the box, so
+regrasps after a missed grasp show up as more than one; success_frame is the frame from
+which the box stays on the target (None if it does not end there). After a missed grasp the
+policies trained on the plain demos carry on to the target and back to the start pose, which
+looks like the start of an episode, so they do the whole task again: success_frame shows
+whether that still fits in a shorter episode.
+
+To evaluate on the boundary where the expert switches grasps (relative grasp angle |g| in
+[35, 45] deg), add -p box_rel_yaw_range:=[35.0,55.0] to sim_node, see sim_node.py.
 """
 
 import json
@@ -37,6 +46,7 @@ from std_srvs.srv import Trigger
 from .collect_demos import pose_to_array, stamp_ns
 from .expert import box_features, is_success
 from .export_dataset import JOINT_NAMES, ordered
+from .kinematics import TopDownIK
 
 
 class PolicyClient:
@@ -74,13 +84,15 @@ class PolicyEvaluator(Node):
                                      'models', 'robotstudio_so101', 'scene_pick_place.xml')
         self.declare_parameter('model_path', default_model)   # same scene as sim_node
         self.declare_parameter('num_episodes', 50)
-        self.declare_parameter('max_steps', 600)              # frames; the demos take 506
+        self.declare_parameter('max_steps', 900)              # frames; the demos take 506,
+                                                              #   ~700 with a regrasp
         self.declare_parameter('output_dir', 'eval')
         self.declare_parameter('server_host', '127.0.0.1')
         self.declare_parameter('server_port', 5555)
 
         model = mujoco.MjModel.from_xml_path(self.get_parameter('model_path').value)
         self.target_pos = model.site('target').pos.copy()
+        self.kinematics = TopDownIK(model)
         self.max_steps = self.get_parameter('max_steps').value
         self.policy = PolicyClient(self.get_parameter('server_host').value,
                                    self.get_parameter('server_port').value)
@@ -189,10 +201,31 @@ class PolicyEvaluator(Node):
             'success': success,
             'target_dist': round(float(np.linalg.norm(box_final[:2] - self.target_pos[:2])), 4),
             'lifted': bool(self.max_box_z > 0.04),   # box centre rests at 0.02 m
+            'grasp_attempts': self._grasp_attempts(frames),
+            'success_frame': self._success_frame(frames),
             'frames': len(frames),
             'policy_ms': round(1e3 * self.policy_time / max(1, len(frames)), 2),
         }
         return result, frames
+
+    def _grasp_attempts(self, frames, threshold=0.5, max_dist=0.04, max_height=0.05):
+        """Times the gripper command went from open to closed (across threshold, rad) with
+        the tool within max_dist (m) of the box horizontally and below max_height (m), i.e.
+        not when the gripper closes on the way back to the start pose."""
+        grip = np.array([action[5] for _, _, action, _ in frames])
+        attempts = 0
+        for i in np.flatnonzero((grip[:-1] >= threshold) & (grip[1:] < threshold)) + 1:
+            state, env, _, _ = frames[i]
+            tool, _ = self.kinematics.forward(np.array(state[:5]))
+            attempts += bool(np.linalg.norm(tool[:2] - env[:2]) < max_dist and tool[2] < max_height)
+        return attempts
+
+    def _success_frame(self, frames):
+        """First frame from which the box is on the target (expert.is_success) to the end."""
+        ok = [is_success(env[:3], self.target_pos) for _, env, _, _ in frames]
+        if not ok[-1]:
+            return None
+        return len(ok) - int(np.argmin(ok[::-1])) if not all(ok) else 0
 
     def run(self):
         out_dir = os.path.abspath(self.get_parameter('output_dir').value)
@@ -222,6 +255,7 @@ class PolicyEvaluator(Node):
                     'FAILED (' + ('dropped/misplaced' if result['lifted'] else 'not lifted') + ')'
                 self.get_logger().info(f'episode {episode}: {outcome}, '
                                        f'{100 * result["target_dist"]:.1f} cm from target, '
+                                       f'{result["grasp_attempts"]} grasp(s), '
                                        f'{result["policy_ms"]} ms/step')
 
         arrays = {k: np.concatenate(v) for k, v in columns.items()}
@@ -232,13 +266,19 @@ class PolicyEvaluator(Node):
 
         n_success = sum(r['success'] for r in results)
         n_lifted = sum(r['lifted'] for r in results)
+        n_regrasped = sum(r['grasp_attempts'] > 1 for r in results)
+        n_recovered = sum(r['grasp_attempts'] > 1 and r['success'] for r in results)
+        n_by_600 = sum(r['success'] and r['success_frame'] < 600 for r in results)
         summary = {'episodes': num_episodes, 'success_rate': n_success / num_episodes,
-                   'successes': n_success, 'lifted': n_lifted}
+                   'successes': n_success, 'successes_by_frame_600': n_by_600,
+                   'lifted': n_lifted, 'regrasped': n_regrasped, 'recovered': n_recovered}
         with open(os.path.join(out_dir, 'summary.json'), 'w') as f:
             json.dump(summary, f, indent=2)
         self.get_logger().info(f'Success rate: {n_success}/{num_episodes} '
                                f'({100 * n_success / num_episodes:.0f}%), '
-                               f'box lifted in {n_lifted}/{num_episodes}')
+                               f'box lifted in {n_lifted}/{num_episodes}, '
+                               f'regrasped in {n_regrasped} ({n_recovered} succeeded), '
+                               f'{n_by_600} succeeded within 600 frames')
 
 
 def spin_quietly(executor):
