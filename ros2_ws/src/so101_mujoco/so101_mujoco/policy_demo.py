@@ -116,24 +116,24 @@ class Panel:
         self.az_train = node.get_parameter('train_azimuth_range').value
 
         root = self.root = tk.Tk()
-        root.title('SO-101 策略演示')
+        root.title('Physical AI Final Project')
         root.resizable(False, False)
         root.protocol('WM_DELETE_WINDOW', self.close)
         frame = ttk.Frame(root, padding=12)
         frame.grid()
 
-        box = ttk.LabelFrame(frame, text='方块初始位置', padding=8)
+        box = ttk.LabelFrame(frame, text='Initial box pose', padding=8)
         box.grid(row=0, column=0, sticky='ew')
         self.r = tk.DoubleVar(value=100 * np.mean(self.r_train))
         self.az = tk.DoubleVar(value=np.mean(self.az_train))
         self.yaw = tk.DoubleVar(value=0.0)
         self.sliders = [
-            self._slider(box, 0, '距离 r (cm)', self.r, 100 * self.r_train[0], 100 * self.r_train[1]),
-            self._slider(box, 1, '方位角 (°)', self.az, *self.az_train),
-            self._slider(box, 2, '朝向 (°)', self.yaw, -45.0, 45.0),
+            self._slider(box, 0, 'Distance r (cm)', self.r, 100 * self.r_train[0], 100 * self.r_train[1]),
+            self._slider(box, 1, 'Azimuth (°)', self.az, *self.az_train),
+            self._slider(box, 2, 'Yaw (°)', self.yaw, -45.0, 45.0),
         ]
         self.allow_outside = tk.BooleanVar(value=False)
-        self.outside_check = ttk.Checkbutton(box, text='允许超出训练范围（地面白框）',
+        self.outside_check = ttk.Checkbutton(box, text='Allow outside the training range (white outline)',
                                              variable=self.allow_outside,
                                              command=self._on_allow_outside)
         self.outside_check.grid(row=3, column=0, columnspan=3, sticky='w', pady=(6, 0))
@@ -142,17 +142,17 @@ class Panel:
 
         buttons = ttk.Frame(frame, padding=(0, 10))
         buttons.grid(row=1, column=0, sticky='ew')
-        self.random_button = ttk.Button(buttons, text='随机摆放', command=self.randomize)
-        self.start_button = ttk.Button(buttons, text='开始', command=self.start)
-        self.stop_button = ttk.Button(buttons, text='停止', command=self.stop, state='disabled')
-        self.reset_button = ttk.Button(buttons, text='重新摆放', command=self.place)
+        self.random_button = ttk.Button(buttons, text='Random', command=self.randomize)
+        self.start_button = ttk.Button(buttons, text='Start', command=self.start)
+        self.stop_button = ttk.Button(buttons, text='Stop', command=self.stop, state='disabled')
+        self.reset_button = ttk.Button(buttons, text='Place again', command=self.place)
         for i, b in enumerate([self.random_button, self.start_button, self.stop_button,
                                self.reset_button]):
             b.grid(row=0, column=i, padx=2)
 
         speed_row = ttk.Frame(frame)
         speed_row.grid(row=2, column=0, sticky='w')
-        ttk.Label(speed_row, text='速度').grid(row=0, column=0, padx=(0, 6))
+        ttk.Label(speed_row, text='Speed').grid(row=0, column=0, padx=(0, 6))
         speed = node.get_parameter('speed').value
         self.speed = tk.StringVar(value=self._speed_label(speed))
         labels = [self._speed_label(s) for s in sorted(set(SPEEDS) | {speed})]
@@ -160,7 +160,7 @@ class Panel:
                                     command=lambda label: node.set_speed(float(label[:-1])))
         speed_menu.grid(row=0, column=1)
 
-        self.status = ttk.Label(frame, text='等待仿真…', width=48)
+        self.status = ttk.Label(frame, text='Waiting for the simulator…', width=60)
         self.status.grid(row=3, column=0, sticky='w', pady=(10, 0))
         self.result_label = ttk.Label(frame, text='')
         self.result_label.grid(row=4, column=0, sticky='w')
@@ -176,7 +176,7 @@ class Panel:
         return f'{speed:g}×'
 
     def _slider(self, parent, row, text, var, low, high):
-        ttk.Label(parent, text=text, width=12).grid(row=row, column=0, sticky='w')
+        ttk.Label(parent, text=text, width=15).grid(row=row, column=0, sticky='w')
         scale = ttk.Scale(parent, from_=low, to=high, variable=var, length=260,
                           command=lambda _: self._on_slider())
         scale.grid(row=row, column=1)
@@ -198,9 +198,9 @@ class Panel:
 
     def _update_range_label(self):
         if self._in_train_range():
-            self.range_label.config(text='在训练范围内', foreground='green')
+            self.range_label.config(text='Inside the training range', foreground='green')
         else:
-            self.range_label.config(text='超出训练范围：策略可能失败（方块显示为黄色）',
+            self.range_label.config(text='Outside the training range (yellow box): the policy may fail',
                                     foreground='#b07000')
 
     def _on_slider(self):
@@ -230,7 +230,7 @@ class Panel:
             return
         self.node.place_box(*self._box_pose())
         self.start_button.state(['!disabled'])
-        self.status.config(text='已摆放方块，点“开始”运行策略')
+        self.status.config(text='Box placed, press Start to run the policy')
 
     def randomize(self):
         rng = np.random.default_rng()
@@ -271,14 +271,14 @@ class Panel:
     def _poll_run(self):
         if not self.node.done.is_set():
             n = self.node.frame_count()
-            self.status.config(text=f'运行中：第 {n} 帧（{n / 50:.1f} s 仿真时间）')
+            self.status.config(text=f'Running: frame {n} ({n / 50:.1f} s sim time)')
             self.root.after(100, self._poll_run)
             return
         self._set_running(False)
         # The arm is wherever the run left it: place the box again before the next run.
         self.start_button.state(['disabled'])
         if self.node.frame_count() == 0:
-            self.status.config(text='已停止，请重新摆放方块')
+            self.status.config(text='Stopped, place the box again')
             return
         self._record(*self.node.end_episode(self.box_init))
 
@@ -293,19 +293,19 @@ class Panel:
         save_rollouts(os.path.join(self.out_dir, 'rollouts.npz'), self.episode_frames)
 
         if result['success']:
-            text, colour = f'成功：离目标中心 {100 * result["target_dist"]:.1f} cm', 'green'
+            text, colour = f'Success: {100 * result["target_dist"]:.1f} cm from the target centre', 'green'
         elif result['stopped']:
-            text, colour = '已手动停止', 'gray'
+            text, colour = 'Stopped by hand', 'gray'
         else:
-            text = '失败：' + ('抓起后掉落 / 放偏' if result['lifted'] else '没有抓起方块')
+            text = 'Failed: ' + ('dropped / misplaced' if result['lifted'] else 'box not lifted')
             colour = 'red'
         if result['grasp_attempts'] > 1:
-            text += f'（抓取 {result["grasp_attempts"]} 次）'
+            text += f' ({result["grasp_attempts"]} grasps)'
         self.result_label.config(text=text, foreground=colour)
-        self.status.config(text=f'第 {episode} 次运行结束，{len(frames)} 帧'
-                                f'（{len(frames) / 50:.1f} s）；可以重新摆放方块')
+        self.status.config(text=f'Run {episode} finished after {len(frames)} frames'
+                                f' ({len(frames) / 50:.1f} s); place the box again')
         n_success = sum(r['success'] for r in self.results)
-        self.tally.config(text=f'累计：{n_success}/{len(self.results)} 次成功')
+        self.tally.config(text=f'Total: {n_success}/{len(self.results)} successful')
         self.node.get_logger().info(f'run {episode}: {text}')
 
     def _heartbeat(self):
