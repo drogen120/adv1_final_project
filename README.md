@@ -64,6 +64,7 @@ adv1_final_project/
 │   └── train_act_colab.ipynb              # 在 Colab 上训练 ACT（M3）
 ├── scripts/
 │   ├── check_expert.py                    # 不用 ROS，在整个随机范围上离线验证脚本专家（可模拟沿开合方向的误差）
+│   ├── demo.sh                            # 交互演示：一条命令启动推理服务、带 viewer 的仿真和控制面板
 │   ├── check_retry.py                     # 不用 ROS，离线验证失败注入与重新抓取（选注入范围用）
 │   ├── grasp_metrics.py                   # 评估的抓取指标（开合方向偏差、朝向误差、首次接触）与逐回合配对比较
 │   ├── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
@@ -90,7 +91,8 @@ adv1_final_project/
                 ├── expert.py              # 脚本专家：规划整条抓取放置轨迹
                 ├── collect_demos.py       # 采集节点：专家示教 → 每回合一个 rosbag
                 ├── export_dataset.py      # rosbag → 对齐的训练帧（.npz）
-                └── policy_eval.py         # 闭环评估节点：调用推理服务控制仿真，统计成功率
+                ├── policy_eval.py         # 闭环评估节点：调用推理服务控制仿真，统计成功率
+                └── policy_demo.py         # 交互演示节点：Tk 控制面板摆放方块，实时运行策略
 ```
 
 ## 安装
@@ -269,6 +271,28 @@ ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=
 
 同一 seed 下每次评估的方块摆放序列相同，不同 checkpoint / 执行方式的成功率可以直接对比（改了 `box_radius_range` 后，各回合的方位角和朝向不变，只有 r 会变）。
 
+### 交互演示
+
+用户在控制面板上摆放方块，策略在 viewer 中实时完成抓取和放置：
+
+```bash
+pixi run bash scripts/demo.sh                 # 1 倍速，默认用重抓数据训练的 ACT（60k）
+pixi run bash scripts/demo.sh --speed 0.5     # 半速，方便看清抓取
+pixi run bash scripts/demo.sh --checkpoint outputs/act_200/checkpoints/040000/pretrained_model
+#   after -- 的参数交给 policy_server.py，例如：-- --temporal-ensemble 0.01
+```
+
+脚本依次启动 `policy_server.py`、带 viewer 的 `sim_node`（`sync_mode`，`realtime_factor` = 速度）和 `policy_demo` 控制面板；关闭面板或 viewer、或在终端按 Ctrl-C，三个进程会一起退出。日志在 `data/demo/logs/`。
+
+控制面板：
+
+- **滑块**：方块到基座的距离 r、方位角、朝向。每次改动都会通过 `/place_box` 重置场景：机械臂回到初始姿态，方块放到指定位置。默认只能在训练范围内调（r ∈ [18, 25] cm，方位角 ∈ [5°, 40°]，viewer 地面上的白框）。勾选“允许超出训练范围”后范围放宽到 r ∈ [10, 40] cm、方位角 ∈ [−90°, 90°]，超出时方块变成黄色，策略可能失败。
+- **开始 / 停止**：运行策略。方块在目标上停稳 1 s、并且机械臂回到初始姿态后，这次运行结束（在目标上停够 5 s 也会结束，最多 `max_steps` = 900 帧）。运行结束后要重新摆放方块才能再次开始。
+- **速度**：0.25× – 2×，运行中也可以改（设置 `sim_node` 的 `realtime_factor` 参数）。
+- 运行过程中可以在 viewer 里双击选中方块，按住 Ctrl 加鼠标右键拖动，推动方块，观察闭环策略的反应。
+
+每次运行的结果都追加到 `data/demo/<启动时间>/episodes.jsonl` 和 `rollouts.npz`，格式与 `policy_eval` 相同，可以用 `render_eval_cases.py` / `visualize_demos.py` 离线渲染成视频。
+
 ### 只看模型（不启动 ROS）
 
 ```bash
@@ -282,6 +306,7 @@ pixi run python -m mujoco.viewer --mjcf=ros2_ws/src/so101_mujoco/models/robotstu
 | 发布 | `/joint_states` | `sensor_msgs/JointState` | 6 个关节的位置 / 速度 / 力矩 |
 | 发布 | `/box_pose` | `geometry_msgs/PoseStamped` | 方块位姿（场景中有名为 `box` 的 body 时），frame 为 `world` |
 | 发布 | `/clock` | `rosgraph_msgs/Clock` | 仿真时间，重置后继续递增，不会回退 |
+| 订阅 | `/place_box` | `geometry_msgs/Pose2D` | 和 `/reset` 一样重置场景，但把方块放在 (x, y)（m）、yaw = theta（rad）处，不随机摆放；超出 `box_radius_range` × `box_azimuth_range` 时方块显示为黄色。`policy_demo` 用它摆放方块 |
 | 订阅 | `/joint_command` | `sensor_msgs/JointState` | 关节目标角度（弧度）。带 `name` 时可只控制部分关节；不带 `name` 时需按顺序给出全部 6 个值；`name` 和 `position` 都为空表示“保持当前目标”（同步模式下用作应答）。超出范围会被截断 |
 | 服务 | `/reset` | `std_srvs/Trigger` | 将场景重置到初始状态（开启 `randomize_box` 时随机摆放方块） |
 
@@ -294,7 +319,7 @@ pixi run python -m mujoco.viewer --mjcf=ros2_ws/src/so101_mujoco/models/robotstu
 | `model_path` | 包内 `scene_pick_place.xml` | MJCF 场景文件路径 |
 | `keyframe` | `""` | 初始姿态使用的 keyframe 名（如 `pickup`），为空则使用模型默认姿态 |
 | `publish_rate` | `50.0` | `/joint_states`、`/box_pose` 的发布频率（Hz） |
-| `realtime_factor` | `1.0` | 仿真速度相对实时的倍率，`0.0` 表示尽可能快（必须写成浮点数，写 `0` 会报类型错误） |
+| `realtime_factor` | `1.0` | 仿真速度相对实时的倍率，`0.0` 表示尽可能快（必须写成浮点数，写 `0` 会报类型错误）。运行中可以用 `ros2 param set /so101_mujoco_sim realtime_factor 0.5` 修改 |
 | `use_viewer` | `false` | 是否打开 MuJoCo 可视化窗口（需 mjpython） |
 | `publish_clock` | `true` | 是否发布 `/clock` |
 | `randomize_box` | `true` | 重置时随机摆放方块（位置 + yaw） |
@@ -304,6 +329,7 @@ pixi run python -m mujoco.viewer --mjcf=ros2_ws/src/so101_mujoco/models/robotstu
 | `seed` | `0` | 随机种子（评估时固定它，便于复现） |
 | `sync_mode` | `false` | 同步模式：每发布一帧状态，就等待一条时间戳相同的 `/joint_command` 后再继续步进 |
 | `sync_timeout` | `1.0` | 同步模式下最多等待多久（墙钟秒）；超时则照常步进，因此没有控制端时仿真也能继续运行 |
+| `show_workspace` | `true` | viewer 中在地面上画出方块的随机范围（`box_radius_range` × `box_azimuth_range`，即训练范围） |
 
 **同步模式**：控制端（`collect_demos`、之后的策略节点）对每一条 `/joint_states` 都回复一条带相同时间戳的指令，没有新指令时回复空指令。这样无论控制端多慢、是否卡顿，指令都会在下一步之前生效，记录下来的 (状态, 动作) 严格对应，结果也可以复现。异步模式下，控制端的任何卡顿都会让机械臂停留在旧目标上，而计划仍在继续推进，导致数据中出现“动作在变、状态冻结”的片段（实测出现过）。
 

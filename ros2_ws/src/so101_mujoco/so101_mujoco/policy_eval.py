@@ -78,8 +78,8 @@ class PolicyClient:
 
 class PolicyEvaluator(Node):
 
-    def __init__(self):
-        super().__init__('so101_policy_eval')
+    def __init__(self, node_name='so101_policy_eval'):
+        super().__init__(node_name)
         default_model = os.path.join(get_package_share_directory('so101_mujoco'),
                                      'models', 'robotstudio_so101', 'scene_pick_place.xml')
         self.declare_parameter('model_path', default_model)   # same scene as sim_node
@@ -155,9 +155,13 @@ class PolicyEvaluator(Node):
 
         self.frames.append((state, env, cmd.position, t))
         self.max_box_z = max(self.max_box_z, box_pos[2])
-        if len(self.frames) >= self.max_steps:
+        if self._episode_over():
             self.active = False
             self.done.set()
+
+    def _episode_over(self):
+        """Called with the lock held after each frame; True ends the episode."""
+        return len(self.frames) >= self.max_steps
 
     # --- episode loop (main thread) ---
 
@@ -179,6 +183,15 @@ class PolicyEvaluator(Node):
             raise RuntimeError('/reset failed')
         # Messages published before the reset may still be queued; let them drain.
         self._wait_states(5)
+        box_init = self.begin_episode()
+        while not self.done.wait(0.1):
+            if not rclpy.ok():
+                raise KeyboardInterrupt
+        return self.end_episode(box_init)
+
+    def begin_episode(self):
+        """Reset the policy and start answering /joint_states with it, from the current
+        state of the sim. Returns the box position at the start."""
         self.policy.reset()
         with self.lock:
             box_init, _ = pose_to_array(self.last_box)
@@ -186,9 +199,16 @@ class PolicyEvaluator(Node):
             self.pending_state = None
             self.done.clear()
             self.active = True
-        while not self.done.wait(0.1):
-            if not rclpy.ok():
-                raise KeyboardInterrupt
+        return box_init
+
+    def stop_episode(self):
+        """End the running episode early (done is set as when it ends by itself)."""
+        with self.lock:
+            self.active = False
+            self.done.set()
+
+    def end_episode(self, box_init):
+        """Judge the episode that just ended. Returns (result, frames)."""
         # Let the box come to rest after the last command before judging.
         self._wait_states(2)
         with self.lock:
@@ -235,22 +255,14 @@ class PolicyEvaluator(Node):
             raise RuntimeError('/reset service not available; is sim_node running?')
         self.get_logger().info(f'Evaluating {num_episodes} episodes into {out_dir}')
 
-        columns = {k: [] for k in ['observation_state', 'observation_environment_state', 'action',
-                                   'episode_index', 'frame_index', 'timestamp']}
-        results = []
+        results, episode_frames = [], []
         with open(os.path.join(out_dir, 'episodes.jsonl'), 'w') as f:
             for episode in range(num_episodes):
                 result, frames = self.run_episode()
                 results.append(result)
+                episode_frames.append(frames)
                 f.write(json.dumps({'episode': episode, **result}) + '\n')
                 f.flush()
-                state, env, action, stamps = map(np.array, zip(*frames))
-                columns['observation_state'].append(state)
-                columns['observation_environment_state'].append(env)
-                columns['action'].append(action)
-                columns['episode_index'].append(np.full(len(frames), episode))
-                columns['frame_index'].append(np.arange(len(frames)))
-                columns['timestamp'].append((stamps - stamps[0]) * 1e-9)
                 outcome = 'success' if result['success'] else \
                     'FAILED (' + ('dropped/misplaced' if result['lifted'] else 'not lifted') + ')'
                 self.get_logger().info(f'episode {episode}: {outcome}, '
@@ -258,11 +270,7 @@ class PolicyEvaluator(Node):
                                        f'{result["grasp_attempts"]} grasp(s), '
                                        f'{result["policy_ms"]} ms/step')
 
-        arrays = {k: np.concatenate(v) for k, v in columns.items()}
-        for k in ['observation_state', 'observation_environment_state', 'action', 'timestamp']:
-            arrays[k] = arrays[k].astype(np.float32)
-        np.savez_compressed(os.path.join(out_dir, 'rollouts.npz'), **arrays,
-                            fps=50.0, joint_names=np.array(JOINT_NAMES))
+        save_rollouts(os.path.join(out_dir, 'rollouts.npz'), episode_frames)
 
         n_success = sum(r['success'] for r in results)
         n_lifted = sum(r['lifted'] for r in results)
@@ -279,6 +287,25 @@ class PolicyEvaluator(Node):
                                f'box lifted in {n_lifted}/{num_episodes}, '
                                f'regrasped in {n_regrasped} ({n_recovered} succeeded), '
                                f'{n_by_600} succeeded within 600 frames')
+
+
+def save_rollouts(path, episode_frames):
+    """Write the frames of each episode (lists of (state, env, action, stamp)) to path, in the
+    format of export_dataset."""
+    columns = {k: [] for k in ['observation_state', 'observation_environment_state', 'action',
+                               'episode_index', 'frame_index', 'timestamp']}
+    for episode, frames in enumerate(episode_frames):
+        state, env, action, stamps = map(np.array, zip(*frames))
+        columns['observation_state'].append(state)
+        columns['observation_environment_state'].append(env)
+        columns['action'].append(action)
+        columns['episode_index'].append(np.full(len(frames), episode))
+        columns['frame_index'].append(np.arange(len(frames)))
+        columns['timestamp'].append((stamps - stamps[0]) * 1e-9)
+    arrays = {k: np.concatenate(v) for k, v in columns.items()}
+    for k in ['observation_state', 'observation_environment_state', 'action', 'timestamp']:
+        arrays[k] = arrays[k].astype(np.float32)
+    np.savez_compressed(path, **arrays, fps=50.0, joint_names=np.array(JOINT_NAMES))
 
 
 def spin_quietly(executor):
