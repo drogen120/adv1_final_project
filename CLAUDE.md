@@ -12,6 +12,7 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 - M3、M4 已完成（M5：报告与演示视频进行中）。M3：ACT 基线（state + environment_state，无图像），用 `notebooks/train_act_colab.ipynb` 在 Colab Pro 上训练，对比 50 / 200 回合。SmolVLA 只作为扩展阶段（需要先给 `sim_node` 加图像观测）。
 - 偏移数据训练的 ACT（seed 100 评估）：40k 49/50、60k 47/50，差异不显著。剩下的失败都在相对抓取角 g ≈ +45° 处（专家在这里换一对侧面抓，抓取方向跳 90°，策略把两种抓法平均，手腕少转约 30°），见 `docs/eval_act_offset.md`；指标用 `scripts/grasp_metrics.py` 计算。
 - 重新抓取（进行中）：`expert.PickPlaceEpisode` 分段规划，抬起后检查方块，没抬起就重抓；`collect_demos` 可以用 `inject_failure_prob` 让第一次抓取故意失败（`wrist` / `offset` 两种，范围用 `scripts/check_retry.py` 离线选定），`episodes.jsonl` 的 `clip_start` 让 `export_dataset` 只导出重抓开始之后的帧。恢复数据：`data/demos_retry`（seed 3）。边界评估：sim 加 `box_rel_yaw_range:=[35.0,55.0]`（|g| ∈ [35°, 45°]）。不注入时 `plan()` / 采集结果和以前逐帧一致。
+- 交互演示：`scripts/demo.sh`（`pixi run bash scripts/demo.sh [--speed 0.5]`）启动 policy_server、带 viewer 的 sim 和 `policy_demo`（Tk 面板：滑块摆放方块 → `/place_box`；开始/停止；速度 → 运行时设置 sim 的 `realtime_factor`）。`policy_demo` 继承 `PolicyEvaluator`（`begin_episode` / `end_episode` / `_episode_over`）。目标仍是固定的（观测里没有目标）。
 - M4：`scripts/policy_server.py`（`.venv-lerobot` 中运行，本地 TCP + 每行一个 JSON）+ `policy_eval` 节点（sync_mode，等同一时间戳的 `/box_pose` 到齐后再构造观测）。
 
 ## 环境与命令

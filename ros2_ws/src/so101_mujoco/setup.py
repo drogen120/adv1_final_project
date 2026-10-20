@@ -37,6 +37,7 @@ setup(
             'collect_demos = so101_mujoco.collect_demos:main',
             'export_dataset = so101_mujoco.export_dataset:main',
             'policy_eval = so101_mujoco.policy_eval:main',
+            'policy_demo = so101_mujoco.policy_demo:main',
         ],
     },
 )
