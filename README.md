@@ -12,12 +12,14 @@ Physical AI 课程期末作业。在 MuJoCo 中仿真 SO-101 机械臂，通过 
 | M1 接口 | MuJoCo 节点发布 `/joint_states`，接收 `/joint_command` | ✅ 完成 |
 | M2 数据 | 脚本策略录制 rosbag，转换为 LeRobot 数据集 | ✅ 完成 |
 | M3 训练 | 在 Colab 上训练 ACT（状态输入），对比 50 / 200 回合 | ✅ 完成 |
-| M4 闭环 | 策略节点控制仿真中的 SO-101，统计成功率 | ✅ 完成（最好 49/50，见下文“结果”） |
+| M4 闭环 | 策略节点控制仿真中的 SO-101，统计成功率 | ✅ 完成（最好 50/50，见下文“结果”） |
+| 改进 | 抓取偏移、方块特征归一化、失败后重新抓取的示教数据 | ✅ 完成 |
+| 演示 | 交互演示界面：在面板上摆放方块，实时观看策略 | ✅ 完成（见“交互演示”） |
 | M5 收尾 | 整理报告与演示视频；可选改进与扩展 | ⏳ 进行中 |
 
 ## 结果
 
-ACT（关节角 + 方块特征，无图像），seed 100 的 50 个回合，`sim_node` 同步模式下闭环评估：
+ACT（关节角 + 方块特征，无图像），seed 100 的 50 个回合，`sim_node` 同步模式下闭环评估。**当前最好的模型是 `act_291_envnorm_retry`（60k），50/50 成功**：
 
 | 模型 | 训练数据 | checkpoint | 成功率 | 成功回合的放置误差（平均） |
 |---|---|---|---|---|
@@ -25,12 +27,16 @@ ACT（关节角 + 方块特征，无图像），seed 100 的 50 个回合，`sim
 | act_200 | 专家无抓取偏移，200 回合 | 60k | 48/50 = 96% | 0.70 cm |
 | act_200（偏移） | 专家抓取偏移 9 mm，200 回合 | 40k | **49/50 = 98%** | 0.88 cm |
 | act_200（偏移） | 同上 | 60k | 47/50 = 94% | 0.66 cm |
+| act_200_envnorm | 同上，方块特征加 `MEAN_STD` 归一化 | 40k | 49/50 = 98% | 0.58 cm |
+| **act_291_envnorm_retry** | 偏移数据 200 回合 + 重新抓取示教 91 回合，方块特征归一化 | 60k | **50/50 = 100%** | **0.48 cm** |
 
 - 所有失败都发生在抓取阶段（方块没有被抬起）；只要抓起来，都能放到目标上。
 - 数据量从 50 增加到 200 回合，成功率从 60% 提升到 96%，逐回合配对的差异显著（18:0）。
 - 失败分析发现，专家抓取时固定爪离方块只有约 0.6 mm，没有给模仿误差留余量。专家加了 9 mm 偏移后，这类失败消失了；剩下的失败集中在相对抓取角接近 ±45° 的摆放上：专家在这里换一对侧面抓，抓取方向跳 90°，策略把两种抓法“平均”了。
 - 偏移模型的 40k 与 60k 在成功率上的差异不显著（p = 0.5），60k 的放置更准。
 - 偏移模型的 r 下限是 0.18 m（之前是 0.17 m），所以评估摆放与前两行只是近似配对。
+- 加入“第一次抓取失败 → 重新抓取”的示教（`data/demos_retry`，seed 3，采集 100 回合，重抓成功的 91 回合只导出重抓之后的片段）后，`act_291_envnorm_retry` 在 seed 100 的 50 回合上全部成功，而且都是第一次就抓起（`regrasped` = 0，全部在 600 帧内完成），放置误差也是各模型中最小的。在 seed 101 的 100 个回合上（其中 24 个 |g| ≥ 35°）也是 100/100。
+- 对照：不含重抓数据的偏移模型（act_200，60k）在边界评估（|g| ∈ [35°, 45°]）上 49/50，但其中 14 回合需要重抓（它没学过重抓，是把整个任务从头再做一遍），600 帧内只成功 36 个。
 
 详细分析：
 
@@ -157,7 +163,7 @@ ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:
 ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=50 -p output_dir:=data/demos
 
 # 追加采集时要换一个 seed，否则会重复已有回合的方块摆放（编号会自动接着往下）
-# 无偏移的旧数据：回合 0–49 用 seed 0，50–199 用 seed 1（data/demos → data/demos.npz）；评估用 seed 100
+# 无偏移的旧数据：回合 0–49 用 seed 0，50–199 用 seed 1（data/demos → data/demos.npz）；评估用 seed 100（补充评估用 seed 101）
 # 加抓取偏移后的数据（当前使用）：data/demos_offset（seed 2，200 回合）→ data/demos_offset.npz
 
 # 专家抓取时把夹爪朝固定爪一侧平移 grasp_offset（默认 0.009 m，见 expert.GRASP_OFFSET），
@@ -233,9 +239,9 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 | 归一化 | STATE / ENV / ACTION 均为 `MEAN_STD`（`--policy.normalization_mapping`） |
 | 其余 | LeRobot 0.6.1 默认（lr 1e-5，KL 权重 10） |
 
-当前的模型是用加抓取偏移后的数据 `data/demos_offset.npz` 训练的（notebook 读取的文件名仍是 `demos.npz`，上传时改名即可）。本机 `outputs/act_200`、`outputs/act_50` 是用偏移数据训练的模型，`outputs/*_backup` 是用无偏移旧数据训练的模型；对应的评估结果在 `data/eval/` 下，命名方式相同。
+当前最好的模型 `outputs/act_291_envnorm_retry` 用偏移数据 + 重抓数据合并导出的 `data/demos_offset_retry.npz`（291 回合）训练，方块特征归一化，60k 步，交互演示默认使用它的 060000 checkpoint。此前的模型是用加抓取偏移后的数据 `data/demos_offset.npz` 训练的（notebook 读取的文件名仍是 `demos.npz`，上传时改名即可）。本机 `outputs/act_200`、`outputs/act_50` 是用偏移数据训练的模型，`outputs/*_backup` 是用无偏移旧数据训练的模型；对应的评估结果在 `data/eval/` 下，命名方式相同。
 
-这些模型都是在方块特征**未归一化**时训练的：ACT 默认的 `normalization_mapping` 只有 `VISUAL / STATE / ACTION`，`observation.environment_state` 的类型是 `ENV`，被当作 `IDENTITY` 处理（统计量照样会写进 checkpoint，只是没有用上）。notebook 现在显式加上了 `ENV`，200 回合的 run 改名为 `act_200_envnorm`，不会覆盖 Drive 上旧的 `act_200`。归一化方式存在 checkpoint 的 `policy_preprocessor.json` 里（`norm_map`），`policy_server.py` 会照它处理，新旧模型都不用改推理代码；但旧权重不能靠改这个 json 切换成归一化输入，必须重新训练。
+`act_50` / `act_200` 及其 `_backup` 都是在方块特征**未归一化**时训练的（`act_200_envnorm`、`act_291_envnorm_retry` 已归一化）：ACT 默认的 `normalization_mapping` 只有 `VISUAL / STATE / ACTION`，`observation.environment_state` 的类型是 `ENV`，被当作 `IDENTITY` 处理（统计量照样会写进 checkpoint，只是没有用上）。notebook 现在显式加上了 `ENV`，200 回合的 run 改名为 `act_200_envnorm`，不会覆盖 Drive 上旧的 `act_200`。归一化方式存在 checkpoint 的 `policy_preprocessor.json` 里（`norm_map`），`policy_server.py` 会照它处理，新旧模型都不用改推理代码；但旧权重不能靠改这个 json 切换成归一化输入，必须重新训练。
 
 训练曲线记录到 W&B 的 `so101-act` 项目（run 名为 `act_200_envnorm` / `act_50`，此前的 run 为 `act_200`；需在 Colab Secrets 中设置 `WANDB_API_KEY`，不用时把 notebook 中的 `USE_WANDB` 改为 `False`）。checkpoint 不上传 W&B，输出写在 Drive 的 `so101_act/outputs/<run>/checkpoints/NNNNNN/pretrained_model`，最后一个单元把所有 `pretrained_model` 打包下载。在本机解压到工程根目录的 `outputs/`（不纳入 git）。
 
@@ -273,14 +279,17 @@ ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=
 
 ### 交互演示
 
-用户在控制面板上摆放方块，策略在 viewer 中实时完成抓取和放置：
+用户在控制面板上摆放方块，策略在 viewer 中实时完成抓取和放置。前提：已按上文建好 `.venv-lerobot`、`pixi run build` 过，并且 `outputs/` 下有 checkpoint（默认 `outputs/act_291_envnorm_retry/checkpoints/060000/pretrained_model`）。在工程根目录运行（不需要先 `pixi shell`）：
 
 ```bash
 pixi run bash scripts/demo.sh                 # 1 倍速，默认用重抓数据训练的 ACT（60k）
 pixi run bash scripts/demo.sh --speed 0.5     # 半速，方便看清抓取
 pixi run bash scripts/demo.sh --checkpoint outputs/act_200/checkpoints/040000/pretrained_model
-#   after -- 的参数交给 policy_server.py，例如：-- --temporal-ensemble 0.01
+#   推理服务端口默认 5555，被占用时用 --port N 改
+#   -- 之后的参数交给 policy_server.py，例如：-- --temporal-ensemble 0.01
 ```
+
+典型用法：启动后等 viewer 和控制面板出现 → 用滑块（或 *Random*）摆好方块 → 点 *Start* → 在 viewer 中观看抓取、放置和回到初始姿态 → 换个位置再点 *Start*。
 
 脚本依次启动 `policy_server.py`、带 viewer 的 `sim_node`（`sync_mode`，`realtime_factor` = 速度）和 `policy_demo` 控制面板；关闭面板或 viewer、或在终端按 Ctrl-C，三个进程会一起退出。日志在 `data/demo/logs/`。
 
