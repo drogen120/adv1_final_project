@@ -7,11 +7,12 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 
 - M0（环境）、M1（`sim_node`：`/joint_states`、`/joint_command`、`/box_pose`、`/clock`、`/reset`）已完成并验证。
 - M2 已完成：`scene_pick_place.xml`（4 cm 立方体，重置时随机摆放）、IK 脚本专家（`expert.py`）、`collect_demos`（同步模式下录制 rosbag）、`export_dataset`（bag → npz）、`scripts/npz_to_lerobot.py`（npz → LeRobot 0.6.1 数据集，ACT 冒烟训练已通过）。数据在 `data/`（不纳入 git）。
-- 数据已补采到 200 回合（0–49 用 seed 0，50–199 用 seed 1；追加采集必须换 seed，评估用 seed 100）。
+- 数据已补采到 200 回合（0–49 用 seed 0，50–199 用 seed 1；追加采集必须换 seed，评估用 seed 100，补充评估用 seed 101）。
 - 按失败分析 4.1 改了专家（抓取点朝固定爪偏移 9 mm，`box_radius_range` 下限改为 0.18 m），用 seed 2 重新采集了 200 回合：`data/demos_offset/` → `data/demos_offset.npz`（200/200 成功）。旧数据 `data/demos*` 是偏移 0、r 从 0.17 m 起采集的，两者不要混用。
 - M3、M4 已完成（M5：报告与演示视频进行中）。M3：ACT 基线（state + environment_state，无图像），用 `notebooks/train_act_colab.ipynb` 在 Colab Pro 上训练，对比 50 / 200 回合。SmolVLA 只作为扩展阶段（需要先给 `sim_node` 加图像观测）。
 - 偏移数据训练的 ACT（seed 100 评估）：40k 49/50、60k 47/50，差异不显著。剩下的失败都在相对抓取角 g ≈ +45° 处（专家在这里换一对侧面抓，抓取方向跳 90°，策略把两种抓法平均，手腕少转约 30°），见 `docs/eval_act_offset.md`；指标用 `scripts/grasp_metrics.py` 计算。
-- 重新抓取（进行中）：`expert.PickPlaceEpisode` 分段规划，抬起后检查方块，没抬起就重抓；`collect_demos` 可以用 `inject_failure_prob` 让第一次抓取故意失败（`wrist` / `offset` 两种，范围用 `scripts/check_retry.py` 离线选定），`episodes.jsonl` 的 `clip_start` 让 `export_dataset` 只导出重抓开始之后的帧。恢复数据：`data/demos_retry`（seed 3）。边界评估：sim 加 `box_rel_yaw_range:=[35.0,55.0]`（|g| ∈ [35°, 45°]）。不注入时 `plan()` / 采集结果和以前逐帧一致。
+- 重新抓取（已完成）：`expert.PickPlaceEpisode` 分段规划，抬起后检查方块，没抬起就重抓；`collect_demos` 可以用 `inject_failure_prob` 让第一次抓取故意失败（`wrist` / `offset` 两种，范围用 `scripts/check_retry.py` 离线选定），`episodes.jsonl` 的 `clip_start` 让 `export_dataset` 只导出重抓开始之后的帧。恢复数据：`data/demos_retry`（seed 3，100 回合中重抓成功 91 回合），与偏移数据合并为 `data/demos_offset_retry.npz`（291 回合）。边界评估：sim 加 `box_rel_yaw_range:=[35.0,55.0]`（|g| ∈ [35°, 45°]）。不注入时 `plan()` / 采集结果和以前逐帧一致。
+- **当前最好的模型**：`outputs/act_291_envnorm_retry`（291 回合，ENV 归一化）60k：seed 100 的 50 回合 50/50（放置误差 0.48 cm，全部第一次就抓起），seed 101 的 100 回合 100/100（`data/eval/act_291_envnorm_retry_60k*`）。尚未在边界评估上测过。交互演示默认用它。
 - 交互演示：`scripts/demo.sh`（`pixi run bash scripts/demo.sh [--speed 0.5]`）启动 policy_server、带 viewer 的 sim 和 `policy_demo`（Tk 面板：滑块摆放方块 → `/place_box`；开始/停止；速度 → 运行时设置 sim 的 `realtime_factor`）。`policy_demo` 继承 `PolicyEvaluator`（`begin_episode` / `end_episode` / `_episode_over`）。目标仍是固定的（观测里没有目标）。
 - M4：`scripts/policy_server.py`（`.venv-lerobot` 中运行，本地 TCP + 每行一个 JSON）+ `policy_eval` 节点（sync_mode，等同一时间戳的 `/box_pose` 到齐后再构造观测）。
 
