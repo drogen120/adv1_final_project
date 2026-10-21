@@ -9,6 +9,9 @@
 #   --port        policy server port (default 5555)
 #   after --      passed on to scripts/policy_server.py, e.g. -- --temporal-ensemble 0.01
 #
+# A policy trained on camera images gets them from sim_node: the cameras are read from the
+# checkpoint's config.json.
+#
 # Closing the panel or the viewer, or Ctrl-C here, stops all three. Logs and the recorded
 # runs go to data/demo/.
 set -eu
@@ -33,6 +36,13 @@ case "$SPEED" in *.*) ;; *) SPEED="$SPEED.0" ;; esac   # ROS float parameters ne
 
 [ -d "$CHECKPOINT" ] || { echo "checkpoint not found: $CHECKPOINT" >&2; exit 1; }
 [ -x .venv-lerobot/bin/python ] || { echo ".venv-lerobot not found, see README" >&2; exit 1; }
+
+# Cameras the policy was trained on (observation.images.<camera>), e.g. "overview,wrist_cam".
+CAMERAS=$(python -c 'import json, sys
+features = json.load(open(sys.argv[1] + "/config.json"))["input_features"]
+print(",".join(k.split(".", 2)[2] for k in features if k.startswith("observation.images.")))' "$CHECKPOINT")
+SIM_ARGS=()
+[ -n "$CAMERAS" ] && SIM_ARGS=(-p cameras:="$CAMERAS")
 
 set +u   # the ROS setup scripts use unset variables
 source ros2_ws/install/setup.bash
@@ -71,10 +81,10 @@ for _ in $(seq 600); do   # loading torch and the policy takes a while the first
 done
 grep -q '^listening' "$LOG_DIR/policy_server.log" || { echo "policy server did not start" >&2; exit 1; }
 
-echo "sim_node with viewer, speed ${SPEED}x (log: $LOG_DIR/sim_node.log)"
+echo "sim_node with viewer, speed ${SPEED}x${CAMERAS:+, cameras $CAMERAS} (log: $LOG_DIR/sim_node.log)"
 ros2 run --prefix mjpython so101_mujoco sim_node --ros-args \
   -p use_viewer:=true -p sync_mode:=true -p realtime_factor:="$SPEED" \
-  > "$LOG_DIR/sim_node.log" 2>&1 &
+  ${SIM_ARGS[@]+"${SIM_ARGS[@]}"} > "$LOG_DIR/sim_node.log" 2>&1 &
 PIDS+=("$!"); NAMES+=(sim_node)
 
 echo "control panel (log: $LOG_DIR/policy_demo.log)"

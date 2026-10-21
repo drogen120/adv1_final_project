@@ -23,10 +23,22 @@ policies trained on the plain demos carry on to the target and back to the start
 looks like the start of an episode, so they do the whole task again: success_frame shows
 whether that still fits in a shorter episode.
 
+A policy trained on camera images (scripts/npz_to_lerobot.py --cameras) gets the images of
+/camera/<name>/image_raw with the stamp of the joint state instead of the box features: the
+node asks the server which inputs the policy has (policy_server.py, "info") and waits for
+those. sim_node must then publish the cameras (-p cameras:=overview,wrist_cam). /box_pose is
+still used, but only to judge success and for the metrics:
+
+    .venv-lerobot/bin/python scripts/policy_server.py outputs/act_img_291/checkpoints/060000/pretrained_model
+    ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:=0.0 \
+        -p seed:=100 -p cameras:=overview,wrist_cam
+    ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=data/eval/act_img_291
+
 To evaluate on the boundary where the expert switches grasps (relative grasp angle |g| in
 [35, 45] deg), add -p box_rel_yaw_range:=[35.0,55.0] to sim_node, see sim_node.py.
 """
 
+import base64
 import json
 import os
 import socket
@@ -40,7 +52,7 @@ from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped
 from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import Image, JointState
 from std_srvs.srv import Trigger
 
 from .collect_demos import pose_to_array, stamp_ns
@@ -65,11 +77,24 @@ class PolicyClient:
             raise ConnectionError('policy server closed the connection')
         return json.loads(line)
 
+    def info(self):
+        """Which inputs the policy takes: {'environment_state': bool, 'cameras': [names]}."""
+        return self._call({'info': True})
+
     def reset(self):
         self._call({'reset': True})
 
-    def act(self, state, environment_state):
-        return self._call({'state': list(state), 'environment_state': list(environment_state)})['action']
+    def act(self, state, environment_state=None, images=None):
+        """images: {camera: sensor_msgs/Image (rgb8)}."""
+        request = {'state': list(state)}
+        if environment_state is not None:
+            request['environment_state'] = list(environment_state)
+        if images:
+            request['images'] = {
+                cam: {'shape': [msg.height, msg.width, 3],
+                      'data': base64.b64encode(bytes(msg.data)).decode('ascii')}
+                for cam, msg in images.items()}
+        return self._call(request)['action']
 
     def close(self):
         self.file.close()
@@ -96,16 +121,26 @@ class PolicyEvaluator(Node):
         self.max_steps = self.get_parameter('max_steps').value
         self.policy = PolicyClient(self.get_parameter('server_host').value,
                                    self.get_parameter('server_port').value)
+        info = self.policy.info()
+        self.uses_env = info['environment_state']
+        self.cameras = info['cameras']
+        self.get_logger().info(f'Policy inputs: joint state'
+                               + (', box features' if self.uses_env else '')
+                               + ''.join(f', camera {c}' for c in self.cameras))
 
         self.cmd_pub = self.create_publisher(JointState, 'joint_command', 10)
         self.create_subscription(JointState, 'joint_states', self._on_joint_states, 100)
         self.create_subscription(PoseStamped, 'box_pose', self._on_box_pose, 100)
+        for cam in self.cameras:
+            self.create_subscription(Image, f'camera/{cam}/image_raw',
+                                     lambda msg, cam=cam: self._on_image(cam, msg), 10)
         self.reset_client = self.create_client(Trigger, 'reset')
 
         # Shared with the main thread; callbacks run on the executor thread.
         self.lock = threading.Lock()
         self.state_count = 0
         self.last_box = None
+        self.last_images = {}       # camera -> latest sensor_msgs/Image
         self.pending_state = None   # /joint_states waiting for the /box_pose with its stamp
         self.active = False
         self.frames = None          # recorded (state, env, action, stamp) of the episode
@@ -120,6 +155,15 @@ class PolicyEvaluator(Node):
             self.last_box = msg
             self._maybe_act()
 
+    def _on_image(self, cam, msg):
+        if msg.encoding != 'rgb8':
+            self.get_logger().error(f'{cam}: expected rgb8 images, got {msg.encoding}',
+                                    throttle_duration_sec=5.0)
+            return
+        with self.lock:
+            self.last_images[cam] = msg
+            self._maybe_act()
+
     def _on_joint_states(self, msg):
         with self.lock:
             self.state_count += 1
@@ -132,19 +176,23 @@ class PolicyEvaluator(Node):
             self._maybe_act()
 
     def _maybe_act(self):
-        """Answer the pending joint state once the box pose with the same stamp is in."""
+        """Answer the pending joint state once the box pose and the camera images with the
+        same stamp are in."""
         state_msg, box_msg = self.pending_state, self.last_box
         if not self.active or state_msg is None or box_msg is None:
             return
         t = stamp_ns(state_msg.header.stamp)
         if stamp_ns(box_msg.header.stamp) != t:
             return
+        images = {cam: self.last_images.get(cam) for cam in self.cameras}
+        if any(msg is None or stamp_ns(msg.header.stamp) != t for msg in images.values()):
+            return
         self.pending_state = None
         box_pos, box_quat = pose_to_array(box_msg)
         state = ordered(state_msg)
-        env = box_features(box_pos, box_quat).tolist()
+        env = box_features(box_pos, box_quat).tolist()  # recorded for the metrics in any case
         start = time.perf_counter()
-        action = self.policy.act(state, env)
+        action = self.policy.act(state, env if self.uses_env else None, images)
         self.policy_time += time.perf_counter() - start
 
         cmd = JointState()
@@ -184,9 +232,18 @@ class PolicyEvaluator(Node):
         # Messages published before the reset may still be queued; let them drain.
         self._wait_states(5)
         box_init = self.begin_episode()
+        start = time.monotonic()
         while not self.done.wait(0.1):
             if not rclpy.ok():
                 raise KeyboardInterrupt
+            with self.lock:
+                stuck = not self.frames and time.monotonic() - start > 10.0
+            if stuck:
+                missing = [c for c in self.cameras if c not in self.last_images]
+                raise RuntimeError(
+                    'no observation complete after 10 s'
+                    + (f'; no images from {missing}: start sim_node with '
+                       f'-p cameras:={",".join(self.cameras)}' if missing else ''))
         return self.end_episode(box_init)
 
     def begin_episode(self):

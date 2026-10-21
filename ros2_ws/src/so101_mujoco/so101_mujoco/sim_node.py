@@ -4,6 +4,7 @@ Topics
   publishes   /joint_states   sensor_msgs/JointState      arm joint position/velocity/effort
               /box_pose       geometry_msgs/PoseStamped   pose of the "box" body, if the scene has one
               /clock          rosgraph_msgs/Clock         simulation time (if publish_clock is true)
+              /camera/<name>/image_raw  sensor_msgs/Image rgb8 image of each camera in `cameras`
   subscribes  /joint_command  sensor_msgs/JointState      position targets in rad; names optional;
                                                           no positions = keep the current targets
               /place_box      geometry_msgs/Pose2D        reset the scene with the box at (x, y) m,
@@ -24,6 +25,14 @@ boundary where the expert switches between two pairs of faces.
 /place_box resets like /reset but puts the box where it is told (used by policy_demo). In
 the viewer, the sector of box_radius_range x box_azimuth_range is drawn on the floor
 (show_workspace), and a box placed outside it turns yellow.
+
+cameras (comma-separated camera names, e.g. "overview,wrist_cam"; empty = no images) renders
+those cameras with every published state, stamped like it, at camera_height x camera_width.
+The images come from cameras.CameraRenderer, the renderer that made the training images
+(scripts/npz_to_lerobot.py --cameras), on the published joint positions and box pose, so a
+policy sees the same pixels in training and in closed loop. It uses its own copy of the
+model, so the viewer's highlight of a box placed out of range does not show in the images.
+Each camera costs ~18 ms of rendering per published state.
 
 realtime_factor can be changed while the sim runs (ros2 param set), e.g. to slow a demo down.
 
@@ -55,7 +64,10 @@ from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState
+from sensor_msgs.msg import Image
 from std_srvs.srv import Trigger
+
+from .cameras import HEIGHT, WIDTH, CameraRenderer
 
 
 def to_time_msg(seconds):
@@ -85,6 +97,9 @@ class MujocoSim(Node):
         self.declare_parameter('sync_mode', False)
         self.declare_parameter('sync_timeout', 1.0)      # s of wall time
         self.declare_parameter('show_workspace', True)   # viewer: draw the box sampling sector
+        self.declare_parameter('cameras', '')            # e.g. 'overview,wrist_cam'
+        self.declare_parameter('camera_height', HEIGHT)
+        self.declare_parameter('camera_width', WIDTH)
 
         model_path = self.get_parameter('model_path').value
         self.model = mujoco.MjModel.from_xml_path(model_path)
@@ -136,6 +151,11 @@ class MujocoSim(Node):
         self.box_pub = self.create_publisher(PoseStamped, 'box_pose', 10) if self.box_id >= 0 else None
         self.clock_pub = (self.create_publisher(Clock, 'clock', 10)
                           if self.get_parameter('publish_clock').value else None)
+        self.camera_names = [c.strip() for c in self.get_parameter('cameras').value.split(',')
+                             if c.strip()]
+        self.image_pubs = {c: self.create_publisher(Image, f'camera/{c}/image_raw', 10)
+                           for c in self.camera_names}
+        self.renderer = None  # created in run(): its OpenGL context belongs to the sim thread
         self.create_subscription(JointState, 'joint_command', self._on_command, 10)
         self.create_service(Trigger, 'reset', self._on_reset)
         if self.box_qpos_adr is not None:
@@ -289,6 +309,18 @@ class MujocoSim(Node):
             pose.pose.orientation.w, pose.pose.orientation.x = qw, qx
             pose.pose.orientation.y, pose.pose.orientation.z = qy, qz
             self.box_pub.publish(pose)
+
+        if self.renderer:
+            images = self.renderer.render_state(js.position, (x, y, z), (qw, qx, qy, qz))
+            for name, image in images.items():
+                msg = Image()
+                msg.header.stamp = stamp
+                msg.header.frame_id = name
+                msg.height, msg.width = image.shape[:2]
+                msg.encoding = 'rgb8'
+                msg.step = 3 * msg.width
+                msg.data = image.tobytes()
+                self.image_pubs[name].publish(msg)
         return stamp.sec * 1_000_000_000 + stamp.nanosec
 
     def _draw_workspace(self, viewer):
@@ -318,6 +350,16 @@ class MujocoSim(Node):
         steps_per_publish = max(1, round(1.0 / (rate * self.model.opt.timestep)))
         sync = self.get_parameter('sync_mode').value
         sync_timeout = self.get_parameter('sync_timeout').value
+
+        if self.camera_names:
+            if self.box_pub is None:
+                raise ValueError('cameras need a scene with a box')
+            model = mujoco.MjModel.from_xml_path(self.get_parameter('model_path').value)
+            self.renderer = CameraRenderer(model, self.camera_names,
+                                           self.get_parameter('camera_height').value,
+                                           self.get_parameter('camera_width').value,
+                                           joint_names=self.joint_names)
+            self.get_logger().info(f'Publishing camera images: {self.camera_names}')
 
         viewer = None
         if self.get_parameter('use_viewer').value:
@@ -350,6 +392,8 @@ class MujocoSim(Node):
         finally:
             if viewer:
                 viewer.close()
+            if self.renderer:
+                self.renderer.close()
 
 
 def spin_quietly(executor):
