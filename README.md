@@ -76,6 +76,7 @@ adv1_final_project/
 │   ├── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
 │   ├── policy_server.py                   # 推理服务：在 LeRobot venv 中加载策略，通过本地 TCP 提供动作
 │   ├── render_eval_cases.py               # 把评估中的失败回合和几个成功回合渲染成 mp4（带抓取特写）
+│   ├── render_policy_cameras.py           # 重新渲染图像策略在某个评估回合中看到的相机画面（overview / wrist_cam）
 │   └── visualize_demos.py                 # 把采集的数据回放成动画（mp4 或窗口）
 ├── data/                                  # 采集的数据（不纳入 git）
 └── ros2_ws/                               # colcon 工作区
@@ -273,6 +274,12 @@ ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=
 - `summary.json`：成功率、重抓过的回合数（`regrasped`）及其中成功的回合数（`recovered`）；
 - `rollouts.npz`：全部帧，格式同 `demos.npz`，可以直接回放：`pixi run python scripts/visualize_demos.py --data data/eval/act_200_60k/rollouts.npz 0-4`。
   失败回合和对照的成功回合可以用 `pixi run python scripts/render_eval_cases.py data/eval/act_200_60k` 渲染成带抓取特写的 mp4（输出在 `videos/` 子目录）。
+  图像策略在某个回合中看到的相机画面（评估时不保存图像）可以用 `scripts/render_policy_cameras.py` 重新渲染：用 sim_node 同一个 `CameraRenderer`，按每帧的关节角和方块位姿渲染 overview / wrist_cam，左右并排输出 mp4 和一张联系表 PNG（输出在 `cameras/` 子目录）。方块在桌上时与策略当时的输入逐像素一致；rollouts 里只有方块 yaw（模 90°），夹在爪中倾斜的方块会画成正的。
+  ```bash
+  pixi run python scripts/render_policy_cameras.py data/eval/act_img_291_60k 7                        # 默认放大 2 倍，联系表均匀取 12 帧
+  pixi run python scripts/render_policy_cameras.py data/eval/act_img_291_60k 7 --speed 0.5 --scale 3
+  pixi run python scripts/render_policy_cameras.py data/eval/act_img_291_60k 7 --frames 200 240 260 300   # 指定联系表的帧
+  ```
   抓取指标和两次评估的逐回合配对比较：`pixi run python scripts/grasp_metrics.py data/eval/act_200_40k data/eval/act_200_60k`。
 
 同一 seed 下每次评估的方块摆放序列相同，不同 checkpoint / 执行方式的成功率可以直接对比（改了 `box_radius_range` 后，各回合的方位角和朝向不变，只有 r 会变）。
