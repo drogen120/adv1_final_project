@@ -137,6 +137,9 @@ def main():
                         help='m, emulated tool errors along the jaw axis (+ = towards the moving jaw)')
     parser.add_argument('--radius', type=float, nargs=2, default=[0.18, 0.25])
     parser.add_argument('--azimuth', type=float, nargs=2, default=[5.0, 40.0], help='deg')
+    parser.add_argument('--rel-yaw', type=float, nargs=2, default=[-45.0, 45.0],
+                        help='deg, range of yaws relative to the arm direction (as sim_node '
+                             'box_rel_yaw_range; the grid excludes the upper end)')
     parser.add_argument('--grid', type=int, nargs=3, default=[5, 8, 9],
                         help='number of radii, azimuths and relative yaws')
     parser.add_argument('-v', '--verbose', action='store_true', help='print every failure')
@@ -145,8 +148,8 @@ def main():
     checker = Checker(args.model)
     radii = np.linspace(*args.radius, args.grid[0])
     azimuths = np.radians(np.linspace(*args.azimuth, args.grid[1]))
-    # Relative yaw in [-45, 45) deg: 45 is the same cube as -45.
-    rel_yaws = np.radians(np.linspace(-45.0, 45.0, args.grid[2], endpoint=False))
+    # Relative yaw in [-45, 45) deg by default: 45 is the same cube as -45.
+    rel_yaws = np.radians(np.linspace(*args.rel_yaw, args.grid[2], endpoint=False))
     poses = [(r, a, a + ry) for r in radii for a in azimuths for ry in rel_yaws]
 
     print(f'{len(poses)} box poses; gaps and box-in-tool in mm as mean [min, max]')

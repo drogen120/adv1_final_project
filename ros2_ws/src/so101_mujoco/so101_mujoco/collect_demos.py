@@ -20,6 +20,13 @@ and a separate output_dir:
     ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=100 \
         -p output_dir:=data/demos_retry -p inject_failure_prob:=1.0 -p seed:=3
 
+Near the grasp switching boundary (|g| in [30, 45] deg; sim_node with the same seed and
+-p box_rel_yaw_range:=[30.0,60.0]), the 'midway' mode mimics the image-based policy:
+
+    ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=100 \
+        -p output_dir:=data/demos_boundary_retry -p inject_failure_prob:=1.0 -p seed:=5 \
+        -p "inject_modes:=['midway']" -p inject_delay:=[0.0,0.3]
+
 Run the sim in sync_mode, so that it waits for each command; otherwise any hiccup in this
 node leaves the arm holding an old target while the plan moves on, and the recorded
 actions no longer match the states:
@@ -48,8 +55,8 @@ from rclpy.serialization import serialize_message
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 
-from .expert import (GRASP_OFFSET, PickPlaceEpisode, PickPlaceExpert, PlanningError, is_success,
-                     sample_injection)
+from .expert import (GRASP_OFFSET, PickPlaceEpisode, PickPlaceExpert, PlanningError, box_yaw,
+                     is_success, relative_grasp_angle, sample_injection)
 
 TOPICS = {
     'joint_states': 'sensor_msgs/msg/JointState',
@@ -89,6 +96,8 @@ class DemoCollector(Node):
         self.declare_parameter('inject_yaw_error', [25.0, 35.0])          # deg, 'wrist'
         self.declare_parameter('inject_wrist_tool_error', [0.010, 0.016])  # m, 'wrist'
         self.declare_parameter('inject_tool_error', [0.012, 0.020])        # m, 'offset'
+        self.declare_parameter('inject_midway_fraction', [0.7, 1.0])       # of g, 'midway'
+        self.declare_parameter('inject_midway_tool_error', [0.007, 0.011])  # m, 'midway'
         self.declare_parameter('inject_delay', [0.0, 0.8])     # s carrying the empty gripper
         self.declare_parameter('seed', 0)                     # for the injections
 
@@ -205,10 +214,15 @@ class DemoCollector(Node):
         injection = None
         if self.rng.uniform() < self.get_parameter('inject_failure_prob').value:
             p = lambda name: self.get_parameter(name).value  # noqa: E731
-            injection = sample_injection(self.rng, self.rng.choice(p('inject_modes')),
+            mode = str(self.rng.choice(p('inject_modes')))
+            injection = sample_injection(self.rng, mode,
                                          p('inject_yaw_error'), p('inject_wrist_tool_error'),
-                                         p('inject_tool_error'), p('inject_delay'))
-            info['injection'] = {'yaw_error_deg': round(float(np.degrees(injection.yaw_error)), 2),
+                                         p('inject_tool_error'), p('inject_delay'),
+                                         p('inject_midway_fraction'), p('inject_midway_tool_error'))
+            yaw_error = injection.yaw_error - injection.midway * relative_grasp_angle(
+                box_pos, box_yaw(box_quat))
+            info['injection'] = {'mode': mode,
+                                 'yaw_error_deg': round(float(np.degrees(yaw_error)), 2),
                                  'tool_error': round(float(injection.tool_error), 4),
                                  'delay': round(float(injection.delay), 3)}
         episode = PickPlaceEpisode(self.expert, q_start, self.target_pos, injection,

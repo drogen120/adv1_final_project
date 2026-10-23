@@ -179,6 +179,9 @@ ros2 run so101_mujoco export_dataset data/demos data/demos.npz
 
 - `wrist`：开合方向偏转 ±25–35°，同时朝活动爪平移 10–16 mm。这模仿 ACT 在 g ≈ 45° 处的失败；只转手腕不会失败，因为夹爪闭合时会把方块转正。
 - `offset`：朝活动爪平移 12–20 mm，固定爪会压到方块顶面上。
+- `midway`（边界数据用，不在默认的 `inject_modes` 里）：模仿图像版 ACT 在 |g| ≳ 35° 处的失败。手腕转回到两种抓法的中间（偏差 = −g × 0.7–1.0，`wrist_roll` ≈ 1.6），同时朝活动爪平移 7–11 mm。只转手腕的话，98% 仍能抓起方块；图像模型的失败回合也都是平移约 0.7–1.1 cm 的（见 `docs/eval_act_images.md`）。
+
+抓空后如果方块没有平放在某个面上（多数是被斜着卡在闭合的夹爪里，张开后还会斜靠在固定爪上），专家先张开夹爪，再把末端竖直抬高 2.5 cm（远处够不到时逐级降到 1 cm），让方块倒平，然后再检查一次，还不平才放弃。立方体侧躺也算平放（`expert.is_flat`；`box_yaw` 此时取水平的那条轴）。方块直立时的路径和以前逐帧一致。离线验证（`midway`，|g| ∈ [30°, 45°]，两个 seed 各 100 回合）：抓空 93 + 88，重抓成功 93 + 86。
 
 注入失败后，专家会继续朝目标运动 0–0.8 s 才“发现”失败，这是在模仿 ACT 按动作块开环执行时的反应延迟。这类回合只有在重抓成功后才保留；`episodes.jsonl` 中记录 `clip_start`（开始重抓的帧号），`export_dataset` 只导出从这一帧开始的片段。这样策略只学恢复，不学故意抓偏。
 
@@ -190,6 +193,15 @@ pixi run python scripts/check_retry.py
 ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:=0.0 -p seed:=3
 ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=100 -p output_dir:=data/demos_retry \
     -p inject_failure_prob:=1.0 -p seed:=3
+
+# 边界附近（|g| ∈ [30°, 45°]）的补充数据：box_rel_yaw_range 设为 [30, 60]（rel 30–45 → g +30…+45，45–60 → g −45…−30）
+#   离线验证：pixi run python scripts/check_retry.py --modes midway --rel-yaw 30 60 --delay 0 0.3 -n 60
+#            （见上文，可用率约 90%）；专家本身：pixi run python scripts/check_expert.py --rel-yaw 30 60 --grid 5 8 12
+ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:=0.0 -p seed:=4 -p "box_rel_yaw_range:=[30.0,60.0]"
+ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=100 -p output_dir:=data/demos_boundary -p seed:=4
+ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:=0.0 -p seed:=5 -p "box_rel_yaw_range:=[30.0,60.0]"
+ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=100 -p output_dir:=data/demos_boundary_retry -p seed:=5 \
+    -p inject_failure_prob:=1.0 -p "inject_modes:=['midway']" -p "inject_delay:=[0.0,0.3]"
 
 # 与正常示教合并导出
 ros2 run so101_mujoco export_dataset data/demos_offset data/demos_retry data/demos_offset_retry.npz
