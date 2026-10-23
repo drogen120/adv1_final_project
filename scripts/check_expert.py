@@ -32,7 +32,7 @@ from so101_mujoco.expert import (GRASP_OFFSET, PickPlaceExpert, PlanningError,  
 DEFAULT_MODEL = os.path.join(REPO, 'ros2_ws', 'src', 'so101_mujoco', 'models',
                              'robotstudio_so101', 'scene_pick_place.xml')
 RATE = 50.0
-SETTLE_TIME = 0.5      # s, as collect_demos
+SETTLE_TIME = 2.0      # s, as collect_demos
 PRE_CLOSE_TIME = 3.0   # s, approach (2.0) + descend (1.0) in PickPlaceExpert.plan
 LIFT_END_TIME = 4.6    # s, ... + grasp (0.6) + lift (1.0)
 

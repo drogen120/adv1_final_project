@@ -14,6 +14,7 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 - 重新抓取（已完成）：`expert.PickPlaceEpisode` 分段规划，抬起后检查方块，没抬起就重抓；`collect_demos` 可以用 `inject_failure_prob` 让第一次抓取故意失败（`wrist` / `offset` 两种，范围用 `scripts/check_retry.py` 离线选定），`episodes.jsonl` 的 `clip_start` 让 `export_dataset` 只导出重抓开始之后的帧。恢复数据：`data/demos_retry`（seed 3，100 回合中重抓成功 91 回合），与偏移数据合并为 `data/demos_offset_retry.npz`（291 回合）。边界评估：sim 加 `box_rel_yaw_range:=[35.0,55.0]`（|g| ∈ [35°, 45°]）。不注入时 `plan()` / 采集结果和以前逐帧一致。
 - **当前最好的模型**：`outputs/act_291_envnorm_retry`（291 回合，ENV 归一化）60k：seed 100 的 50 回合 50/50（放置误差 0.48 cm，全部第一次就抓起），seed 101 的 100 回合 100/100（`data/eval/act_291_envnorm_retry_60k*`）。尚未在边界评估上测过。交互演示默认用它。
 - 交互演示：`scripts/demo.sh`（`pixi run bash scripts/demo.sh [--speed 0.5]`）启动 policy_server、带 viewer 的 sim 和 `policy_demo`（Tk 面板：滑块摆放方块 → `/place_box`；开始/停止；速度 → 运行时设置 sim 的 `realtime_factor`）。`policy_demo` 继承 `PolicyEvaluator`（`begin_episode` / `end_episode` / `_episode_over`）。目标仍是固定的（观测里没有目标）。
+- 完成后的保持：`collect_demos` 的 `settle_time` 从 0.5 s 改为 2.0 s（回合末尾手臂停在初始姿态、方块在目标上，比 1 s 的动作块长）。之前的数据只有 25 帧保持，策略回到初始姿态后会再去方块那里抓一次。同一 seed 重采时前 506 帧与旧数据一致，只多出末尾 75 帧。现有 `data/` 的数据和模型都是 0.5 s 时的，需要重采、重训。
 - M4：`scripts/policy_server.py`（`.venv-lerobot` 中运行，本地 TCP + 每行一个 JSON）+ `policy_eval` 节点（sync_mode，等同一时间戳的 `/box_pose` 到齐后再构造观测）。
 
 ## 环境与命令

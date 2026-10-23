@@ -77,7 +77,10 @@ class DemoCollector(Node):
         self.declare_parameter('num_episodes', 10)
         self.declare_parameter('output_dir', 'demos')
         self.declare_parameter('control_rate', 50.0)          # Hz, must match sim publish_rate
-        self.declare_parameter('settle_time', 0.5)            # s recorded after the plan ends
+        # s recorded after the plan ends, holding the arm at home with the box on the target.
+        # Longer than ACT's 1 s action chunk, so the policy learns to stay put once done
+        # (with 0.5 s it went for the box again). Data before 2026-10 used 0.5.
+        self.declare_parameter('settle_time', 2.0)
         self.declare_parameter('keep_failures', False)        # keep bags of failed episodes
         self.declare_parameter('grasp_offset', GRASP_OFFSET)  # m, see expert.GRASP_OFFSET
         self.declare_parameter('max_retries', 2)              # regrasps after a missed grasp
