@@ -24,6 +24,7 @@ ROOT=${EVAL_ROOT:-data/eval}
 
 IMG=outputs/act_img_291/checkpoints
 STATE=outputs/act_291_envnorm_retry/checkpoints
+ALL=outputs/act_img_all_hold/checkpoints
 BOUNDARY='-p box_rel_yaw_range:=[35.0,55.0]'
 
 # name | checkpoint | seed | episodes | extra sim_node arguments
@@ -32,6 +33,12 @@ JOBS=(
   "act_291_envnorm_retry_60k_boundary|$STATE/060000/pretrained_model|100|50|$BOUNDARY"
   "act_img_291_60k_seed101|$IMG/060000/pretrained_model|101|100|"
   "act_img_291_40k|$IMG/040000/pretrained_model|100|50|"
+  # 480 episodes: hold at the end + boundary data (notebooks/train_act_images_colab.ipynb 2.3)
+  "act_img_all_hold_100k|$ALL/100000/pretrained_model|100|50|"
+  "act_img_all_hold_100k_boundary|$ALL/100000/pretrained_model|100|50|$BOUNDARY"
+  "act_img_all_hold_100k_seed101|$ALL/100000/pretrained_model|101|100|"
+  "act_img_all_hold_60k|$ALL/060000/pretrained_model|100|50|"
+  "act_img_all_hold_60k_boundary|$ALL/060000/pretrained_model|100|50|$BOUNDARY"
 )
 
 # Pairs compared by grasp_metrics.py: reference first. act_291_envnorm_retry_60k_100 is the
@@ -40,6 +47,11 @@ COMPARE=(
   "act_291_envnorm_retry_60k_boundary act_img_291_60k_boundary"
   "act_291_envnorm_retry_60k_100 act_img_291_60k_seed101"
   "act_img_291_60k act_img_291_40k"
+  "act_img_291_60k act_img_all_hold_100k"
+  "act_img_291_60k_boundary act_img_all_hold_100k_boundary"
+  "act_img_291_60k_seed101 act_img_all_hold_100k_seed101"
+  "act_img_291_60k act_img_all_hold_60k"
+  "act_img_291_60k_boundary act_img_all_hold_60k_boundary"
 )
 
 job_field() { echo "$1" | cut -d'|' -f"$2"; }
@@ -163,6 +175,18 @@ for pair in "${COMPARE[@]}"; do
   echo "=== grasp_metrics: $ref vs $other"
   python scripts/grasp_metrics.py "$ROOT/$ref" "$ROOT/$other"
 done
+
+# After the task: does the arm stay at home (see scripts/after_success.py)?
+DONE_DIRS=()
+for job in "${JOBS[@]}"; do
+  name=$(job_field "$job" 1)
+  [ -f "$ROOT/$name/rollouts.npz" ] && DONE_DIRS+=("$ROOT/$name")
+done
+if [ ${#DONE_DIRS[@]} -gt 0 ]; then
+  echo
+  echo "=== after_success"
+  python scripts/after_success.py "${DONE_DIRS[@]}"
+fi
 
 if [ ${#FAILED[@]} -gt 0 ]; then
   echo

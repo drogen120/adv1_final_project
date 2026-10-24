@@ -16,6 +16,7 @@ Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 �
 - 交互演示：`scripts/demo.sh`（`pixi run bash scripts/demo.sh [--speed 0.5]`）启动 policy_server、带 viewer 的 sim 和 `policy_demo`（Tk 面板：滑块摆放方块 → `/place_box`；开始/停止；速度 → 运行时设置 sim 的 `realtime_factor`）。`policy_demo` 继承 `PolicyEvaluator`（`begin_episode` / `end_episode` / `_episode_over`）。目标仍是固定的（观测里没有目标）。
 - 完成后的保持：`collect_demos` 的 `settle_time` 从 0.5 s 改为 2.0 s（回合末尾手臂停在初始姿态、方块在目标上，比 1 s 的动作块长）。之前的数据只有 25 帧保持，策略回到初始姿态后会再去方块那里抓一次。同一 seed 重采时前 506 帧与旧数据一致，只多出末尾 75 帧。现有 `data/` 的数据和模型都是 0.5 s 时的，需要重采、重训。
 - 边界补充数据（代码已改好，尚未正式采集）：新注入模式 `midway`（手腕转到两种抓法中间 + 朝活动爪平移 7–11 mm），以及抓空后方块没平放时先张开夹爪、竖直抬高让方块倒平再判断（立方体侧躺也算平放，`is_flat`）。第一次采集 seed 5 时只成功 72/100（当时只张开不抬高，方块斜靠在固定爪上），修改后离线可用率约 90%，需要重采。计划用 seed 4（正常示教）和 seed 5（`midway` 恢复示教），两批都用 `box_rel_yaw_range:=[30.0,60.0]`（|g| ∈ [30°, 45°]），各 100 回合，命令见 README。`check_retry.py` / `check_expert.py` 加了 `--rel-yaw`。旧模式下，以前成功的回合规划逐帧不变。
+- 新数据已采完并渲染：`data/demos_all_hold.npz` → `data/lerobot/so101_sim_pick_place_images_all_hold`（480 回合 = 正常 200 + 重抓 94 + 边界 100 + 边界 `midway` 重抓 86，274,790 帧；打包为 `data/lerobot/so101_images_all_hold.tar`）。在 Colab 上训练 `act_img_all_hold`（`notebooks/train_act_images_colab.ipynb` 2.3 节，100k 步），评估任务已写进 `scripts/run_evals.sh`。`scripts/after_success.py` 统计成功后手臂回到初始姿态之后有没有再动：旧图像模型几乎每回合都会再动（seed 100 49/49），状态模型 0/150。
 - M4：`scripts/policy_server.py`（`.venv-lerobot` 中运行，本地 TCP + 每行一个 JSON）+ `policy_eval` 节点（sync_mode，等同一时间戳的 `/box_pose` 到齐后再构造观测）。
 
 ## 环境与命令
