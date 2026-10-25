@@ -252,7 +252,7 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 | 归一化 | STATE / ENV / ACTION 均为 `MEAN_STD`（`--policy.normalization_mapping`） |
 | 其余 | LeRobot 0.6.1 默认（lr 1e-5，KL 权重 10） |
 
-当前最好的模型 `outputs/act_291_envnorm_retry` 用偏移数据 + 重抓数据合并导出的 `data/demos_offset_retry.npz`（291 回合）训练，方块特征归一化，60k 步，交互演示默认使用它的 060000 checkpoint。此前的模型是用加抓取偏移后的数据 `data/demos_offset.npz` 训练的（notebook 读取的文件名仍是 `demos.npz`，上传时改名即可）。本机 `outputs/act_200`、`outputs/act_50` 是用偏移数据训练的模型，`outputs/*_backup` 是用无偏移旧数据训练的模型；对应的评估结果在 `data/eval/` 下，命名方式相同。
+当前最好的模型 `outputs/act_291_envnorm_retry` 用偏移数据 + 重抓数据合并导出的 `data/demos_offset_retry.npz`（291 回合）训练，方块特征归一化，60k 步（交互演示现在默认用图像版的 `act_img_all_hold` 100k）。此前的模型是用加抓取偏移后的数据 `data/demos_offset.npz` 训练的（notebook 读取的文件名仍是 `demos.npz`，上传时改名即可）。本机 `outputs/act_200`、`outputs/act_50` 是用偏移数据训练的模型，`outputs/*_backup` 是用无偏移旧数据训练的模型；对应的评估结果在 `data/eval/` 下，命名方式相同。
 
 `act_50` / `act_200` 及其 `_backup` 都是在方块特征**未归一化**时训练的（`act_200_envnorm`、`act_291_envnorm_retry` 已归一化）：ACT 默认的 `normalization_mapping` 只有 `VISUAL / STATE / ACTION`，`observation.environment_state` 的类型是 `ENV`，被当作 `IDENTITY` 处理（统计量照样会写进 checkpoint，只是没有用上）。notebook 现在显式加上了 `ENV`，200 回合的 run 改名为 `act_200_envnorm`，不会覆盖 Drive 上旧的 `act_200`。归一化方式存在 checkpoint 的 `policy_preprocessor.json` 里（`norm_map`），`policy_server.py` 会照它处理，新旧模型都不用改推理代码；但旧权重不能靠改这个 json 切换成归一化输入，必须重新训练。
 
@@ -298,10 +298,11 @@ ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=
 
 ### 交互演示
 
-用户在控制面板上摆放方块，策略在 viewer 中实时完成抓取和放置。前提：已按上文建好 `.venv-lerobot`、`pixi run build` 过，并且 `outputs/` 下有 checkpoint（默认 `outputs/act_291_envnorm_retry/checkpoints/060000/pretrained_model`）。在工程根目录运行（不需要先 `pixi shell`）：
+用户在控制面板上摆放方块，策略在 viewer 中实时完成抓取和放置。前提：已按上文建好 `.venv-lerobot`、`pixi run build` 过，并且 `outputs/` 下有 checkpoint（默认是图像版 ACT `outputs/act_img_all_hold/checkpoints/100000/pretrained_model`，见 `docs/eval_act_images_all_hold.md`；sim 需要的相机按 checkpoint 的 `config.json` 自动打开）。在工程根目录运行（不需要先 `pixi shell`）：
 
 ```bash
-pixi run bash scripts/demo.sh                 # 1 倍速，默认用重抓数据训练的 ACT（60k）
+pixi run bash scripts/demo.sh                 # 1 倍速，默认用 480 回合训练的图像版 ACT（100k）
+pixi run bash scripts/demo.sh --checkpoint outputs/act_291_envnorm_retry/checkpoints/060000/pretrained_model   # 状态版（用方块坐标）
 pixi run bash scripts/demo.sh --speed 0.5     # 半速，方便看清抓取
 pixi run bash scripts/demo.sh --checkpoint outputs/act_200/checkpoints/040000/pretrained_model
 #   推理服务端口默认 5555，被占用时用 --port N 改

@@ -3,7 +3,8 @@
 #
 #   pixi run bash scripts/demo.sh [--checkpoint DIR] [--speed X] [--port N] [-- policy_server args]
 #
-#   --checkpoint  pretrained_model directory (default: the recovery-data ACT, 60k steps)
+#   --checkpoint  pretrained_model directory (default: the image-based ACT trained on 480
+#                 episodes, 100k steps; docs/eval_act_images_all_hold.md)
 #   --speed       realtime factor to start with, e.g. 0.5 for half speed (default 1.0);
 #                 can also be changed from the panel
 #   --port        policy server port (default 5555)
@@ -19,7 +20,7 @@ set -m   # every background job in its own process group, so it can be stopped w
 
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
-CHECKPOINT=outputs/act_291_envnorm_retry/checkpoints/060000/pretrained_model
+CHECKPOINT=outputs/act_img_all_hold/checkpoints/100000/pretrained_model
 SPEED=1.0
 PORT=5555
 SERVER_ARGS=()
