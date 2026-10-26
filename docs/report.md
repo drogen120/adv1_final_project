@@ -2,8 +2,6 @@
 
 Physical AI 课程期末作业报告（个人独立完成）
 
-代码仓库：<https://github.com/drogen120/adv1_final_project>
-
 ## 1. 概述
 
 ### 1.1 作业要求
@@ -245,7 +243,7 @@ MuJoCo Menagerie 自带的 SO-101 场景中，方块放在 x = 0.5 m 处，超�
 
 ## 附录：复现
 
-全部代码在 GitHub 仓库 <https://github.com/drogen120/adv1_final_project> 中，环境搭建和各命令的详细用法见仓库的 `README_CN.md`。
+环境搭建和各命令的详细用法见代码中的 `README_CN.md`。
 
 | 步骤 | 命令 / 文件 |
 |---|---|
