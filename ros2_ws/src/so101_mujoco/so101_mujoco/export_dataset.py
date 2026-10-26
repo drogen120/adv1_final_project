@@ -6,6 +6,10 @@ One frame per recorded /joint_states message:
     action                         (N, 6)  /joint_command answering that joint state
     episode_index, frame_index     (N,)
     timestamp                      (N,)    s since the start of the episode
+    joint_positions                (N, 6)  observation_state in float64, and
+    box_pose                       (N, 7)  the /box_pose of that state, position + quaternion
+                                           (w, x, y, z), float64: what cameras.CameraRenderer
+                                           needs to render the frame exactly as sim_node would
 Only successful episodes are exported. Episodes with a clip_start in episodes.jsonl (the
 recovery demonstrations of collect_demos, whose first grasp missed on purpose) start at that
 frame. Several demo directories can be merged into one .npz. The .npz has no ROS
@@ -59,16 +63,18 @@ def episode_frames(topics, start=0):
     boxes = topics['box_pose']
     box_stamps = np.array([t for t, _ in boxes])
 
-    state, env, action, stamps = [], [], [], []
+    state, env, action, box_pose, stamps = [], [], [], [], []
     for t, msg in [s for s in states if s[0] in commands][start:]:
         # Latest box pose at or before this state (sim_node publishes both with one stamp).
         i = max(0, np.searchsorted(box_stamps, t, side='right') - 1)
+        pos, quat = pose_to_array(boxes[i][1])
         state.append(ordered(msg))
-        env.append(box_features(*pose_to_array(boxes[i][1])))
+        env.append(box_features(pos, quat))
         action.append(ordered(commands[t]))
+        box_pose.append(np.concatenate([pos, quat]))
         stamps.append(t)
     stamps = (np.array(stamps) - stamps[0]) * 1e-9
-    return np.array(state), np.array(env), np.array(action), stamps
+    return np.array(state), np.array(env), np.array(action), np.array(box_pose), stamps
 
 
 def main():
@@ -84,10 +90,11 @@ def main():
     entries = [e for e in entries if e['success'] and e['bag']]
 
     columns = {k: [] for k in ['observation_state', 'observation_environment_state', 'action',
-                               'episode_index', 'frame_index', 'timestamp']}
+                               'episode_index', 'frame_index', 'timestamp', 'joint_positions',
+                               'box_pose']}
     for new_index, entry in enumerate(entries):
         bag = os.path.join(entry['dir'], entry['bag'])
-        state, env, action, stamps = episode_frames(read_bag(bag), entry.get('clip_start', 0))
+        state, env, action, box_pose, stamps = episode_frames(read_bag(bag), entry.get('clip_start', 0))
         n = len(state)
         columns['observation_state'].append(state)
         columns['observation_environment_state'].append(env)
@@ -95,6 +102,8 @@ def main():
         columns['episode_index'].append(np.full(n, new_index))
         columns['frame_index'].append(np.arange(n))
         columns['timestamp'].append(stamps)
+        columns['joint_positions'].append(state)
+        columns['box_pose'].append(box_pose)
         dt = np.diff(stamps)
         irregular = np.abs(dt - np.median(dt)) > 0.5 * np.median(dt)
         note = f', WARNING: {irregular.sum()} irregular frame intervals' if irregular.any() else ''

@@ -76,6 +76,7 @@ adv1_final_project/
 │   ├── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
 │   ├── policy_server.py                   # 推理服务：在 LeRobot venv 中加载策略，通过本地 TCP 提供动作
 │   ├── render_eval_cases.py               # 把评估中的失败回合和几个成功回合渲染成 mp4（带抓取特写）
+│   ├── render_policy_cameras.py           # 重新渲染图像策略在某个评估回合中看到的相机画面（overview / wrist_cam）
 │   └── visualize_demos.py                 # 把采集的数据回放成动画（mp4 或窗口）
 ├── data/                                  # 采集的数据（不纳入 git）
 └── ros2_ws/                               # colcon 工作区
@@ -178,6 +179,9 @@ ros2 run so101_mujoco export_dataset data/demos data/demos.npz
 
 - `wrist`：开合方向偏转 ±25–35°，同时朝活动爪平移 10–16 mm。这模仿 ACT 在 g ≈ 45° 处的失败；只转手腕不会失败，因为夹爪闭合时会把方块转正。
 - `offset`：朝活动爪平移 12–20 mm，固定爪会压到方块顶面上。
+- `midway`（边界数据用，不在默认的 `inject_modes` 里）：模仿图像版 ACT 在 |g| ≳ 35° 处的失败。手腕转回到两种抓法的中间（偏差 = −g × 0.7–1.0，`wrist_roll` ≈ 1.6），同时朝活动爪平移 7–11 mm。只转手腕的话，98% 仍能抓起方块；图像模型的失败回合也都是平移约 0.7–1.1 cm 的（见 `docs/eval_act_images.md`）。
+
+抓空后如果方块没有平放在某个面上（多数是被斜着卡在闭合的夹爪里，张开后还会斜靠在固定爪上），专家先张开夹爪，再把末端竖直抬高 2.5 cm（远处够不到时逐级降到 1 cm），让方块倒平，然后再检查一次，还不平才放弃。立方体侧躺也算平放（`expert.is_flat`；`box_yaw` 此时取水平的那条轴）。方块直立时的路径和以前逐帧一致。离线验证（`midway`，|g| ∈ [30°, 45°]，两个 seed 各 100 回合）：抓空 93 + 88，重抓成功 93 + 86。
 
 注入失败后，专家会继续朝目标运动 0–0.8 s 才“发现”失败，这是在模仿 ACT 按动作块开环执行时的反应延迟。这类回合只有在重抓成功后才保留；`episodes.jsonl` 中记录 `clip_start`（开始重抓的帧号），`export_dataset` 只导出从这一帧开始的片段。这样策略只学恢复，不学故意抓偏。
 
@@ -189,6 +193,15 @@ pixi run python scripts/check_retry.py
 ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:=0.0 -p seed:=3
 ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=100 -p output_dir:=data/demos_retry \
     -p inject_failure_prob:=1.0 -p seed:=3
+
+# 边界附近（|g| ∈ [30°, 45°]）的补充数据：box_rel_yaw_range 设为 [30, 60]（rel 30–45 → g +30…+45，45–60 → g −45…−30）
+#   离线验证：pixi run python scripts/check_retry.py --modes midway --rel-yaw 30 60 --delay 0 0.3 -n 60
+#            （见上文，可用率约 90%）；专家本身：pixi run python scripts/check_expert.py --rel-yaw 30 60 --grid 5 8 12
+ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:=0.0 -p seed:=4 -p "box_rel_yaw_range:=[30.0,60.0]"
+ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=100 -p output_dir:=data/demos_boundary -p seed:=4
+ros2 run so101_mujoco sim_node --ros-args -p sync_mode:=true -p realtime_factor:=0.0 -p seed:=5 -p "box_rel_yaw_range:=[30.0,60.0]"
+ros2 run so101_mujoco collect_demos --ros-args -p num_episodes:=100 -p output_dir:=data/demos_boundary_retry -p seed:=5 \
+    -p inject_failure_prob:=1.0 -p "inject_modes:=['midway']" -p "inject_delay:=[0.0,0.3]"
 
 # 与正常示教合并导出
 ros2 run so101_mujoco export_dataset data/demos_offset data/demos_retry data/demos_offset_retry.npz
@@ -215,7 +228,7 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 
 **任务**：把绿色立方体（4 cm）抓起，放到红色方框（中心 (0.22, −0.12)）上。每次 `/reset` 时，方块在极坐标 r ∈ [0.18, 0.25] m、方位角 ∈ [5°, 40°] 的范围内随机生成，yaw 也随机。成功判据：方块中心与目标的水平距离 < 3 cm，且方块立在地面上（z < 3 cm）。
 
-**专家**（`expert.py`）：根据方块位姿，用数值 IK（MuJoCo 雅可比 + 阻尼最小二乘）规划轨迹：关节空间移动到方块上方 → 竖直下降 → 夹紧 → 抬起 → 平移到目标上方 → 下降 → 松开 → 抬起 → 回到初始姿态，共约 10 s（506 帧）。`collect_demos` 通过 `PickPlaceEpisode` 分两段规划：抬起之后检查方块，没抬起来就重新抓取（见上文）。
+**专家**（`expert.py`）：根据方块位姿，用数值 IK（MuJoCo 雅可比 + 阻尼最小二乘）规划轨迹：关节空间移动到方块上方 → 竖直下降 → 夹紧 → 抬起 → 平移到目标上方 → 下降 → 松开 → 抬起 → 回到初始姿态，共约 10 s（506 帧）。之后 `collect_demos` 再录 `settle_time`（默认 2.0 s，100 帧）手臂停在初始姿态、方块在目标上的保持帧，比 ACT 的 1 s 动作块长，策略才能学到完成后保持不动；2026-10 之前的数据用的是 0.5 s，策略回到初始姿态后会再去方块那里抓一次。`collect_demos` 通过 `PickPlaceEpisode` 分两段规划：抬起之后检查方块，没抬起来就重新抓取（见上文）。
 
 **rosbag 内容**：每回合一个 mcap bag（`data/demos/episode_NNNN`），包含 `/joint_states`、`/box_pose`、`/joint_command`；`data/demos/episodes.jsonl` 记录每个回合的初始位姿与成败。每条指令的时间戳等于它所回应的那条关节状态的时间戳，导出时据此把观测和动作配对。
 
@@ -239,7 +252,7 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 | 归一化 | STATE / ENV / ACTION 均为 `MEAN_STD`（`--policy.normalization_mapping`） |
 | 其余 | LeRobot 0.6.1 默认（lr 1e-5，KL 权重 10） |
 
-当前最好的模型 `outputs/act_291_envnorm_retry` 用偏移数据 + 重抓数据合并导出的 `data/demos_offset_retry.npz`（291 回合）训练，方块特征归一化，60k 步，交互演示默认使用它的 060000 checkpoint。此前的模型是用加抓取偏移后的数据 `data/demos_offset.npz` 训练的（notebook 读取的文件名仍是 `demos.npz`，上传时改名即可）。本机 `outputs/act_200`、`outputs/act_50` 是用偏移数据训练的模型，`outputs/*_backup` 是用无偏移旧数据训练的模型；对应的评估结果在 `data/eval/` 下，命名方式相同。
+当前最好的模型 `outputs/act_291_envnorm_retry` 用偏移数据 + 重抓数据合并导出的 `data/demos_offset_retry.npz`（291 回合）训练，方块特征归一化，60k 步（交互演示现在默认用图像版的 `act_img_all_hold` 100k）。此前的模型是用加抓取偏移后的数据 `data/demos_offset.npz` 训练的（notebook 读取的文件名仍是 `demos.npz`，上传时改名即可）。本机 `outputs/act_200`、`outputs/act_50` 是用偏移数据训练的模型，`outputs/*_backup` 是用无偏移旧数据训练的模型；对应的评估结果在 `data/eval/` 下，命名方式相同。
 
 `act_50` / `act_200` 及其 `_backup` 都是在方块特征**未归一化**时训练的（`act_200_envnorm`、`act_291_envnorm_retry` 已归一化）：ACT 默认的 `normalization_mapping` 只有 `VISUAL / STATE / ACTION`，`observation.environment_state` 的类型是 `ENV`，被当作 `IDENTITY` 处理（统计量照样会写进 checkpoint，只是没有用上）。notebook 现在显式加上了 `ENV`，200 回合的 run 改名为 `act_200_envnorm`，不会覆盖 Drive 上旧的 `act_200`。归一化方式存在 checkpoint 的 `policy_preprocessor.json` 里（`norm_map`），`policy_server.py` 会照它处理，新旧模型都不用改推理代码；但旧权重不能靠改这个 json 切换成归一化输入，必须重新训练。
 
@@ -273,16 +286,23 @@ ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=
 - `summary.json`：成功率、重抓过的回合数（`regrasped`）及其中成功的回合数（`recovered`）；
 - `rollouts.npz`：全部帧，格式同 `demos.npz`，可以直接回放：`pixi run python scripts/visualize_demos.py --data data/eval/act_200_60k/rollouts.npz 0-4`。
   失败回合和对照的成功回合可以用 `pixi run python scripts/render_eval_cases.py data/eval/act_200_60k` 渲染成带抓取特写的 mp4（输出在 `videos/` 子目录）。
+  图像策略在某个回合中看到的相机画面（评估时不保存图像）可以用 `scripts/render_policy_cameras.py` 重新渲染：用 sim_node 同一个 `CameraRenderer`，按每帧的关节角和方块位姿渲染 overview / wrist_cam，左右并排输出 mp4 和一张联系表 PNG（输出在 `cameras/` 子目录）。方块在桌上时与策略当时的输入逐像素一致；rollouts 里只有方块 yaw（模 90°），夹在爪中倾斜的方块会画成正的。
+  ```bash
+  pixi run python scripts/render_policy_cameras.py data/eval/act_img_291_60k 7                        # 默认放大 2 倍，联系表均匀取 12 帧
+  pixi run python scripts/render_policy_cameras.py data/eval/act_img_291_60k 7 --speed 0.5 --scale 3
+  pixi run python scripts/render_policy_cameras.py data/eval/act_img_291_60k 7 --frames 200 240 260 300   # 指定联系表的帧
+  ```
   抓取指标和两次评估的逐回合配对比较：`pixi run python scripts/grasp_metrics.py data/eval/act_200_40k data/eval/act_200_60k`。
 
 同一 seed 下每次评估的方块摆放序列相同，不同 checkpoint / 执行方式的成功率可以直接对比（改了 `box_radius_range` 后，各回合的方位角和朝向不变，只有 r 会变）。
 
 ### 交互演示
 
-用户在控制面板上摆放方块，策略在 viewer 中实时完成抓取和放置。前提：已按上文建好 `.venv-lerobot`、`pixi run build` 过，并且 `outputs/` 下有 checkpoint（默认 `outputs/act_291_envnorm_retry/checkpoints/060000/pretrained_model`）。在工程根目录运行（不需要先 `pixi shell`）：
+用户在控制面板上摆放方块，策略在 viewer 中实时完成抓取和放置。前提：已按上文建好 `.venv-lerobot`、`pixi run build` 过，并且 `outputs/` 下有 checkpoint（默认是图像版 ACT `outputs/act_img_all_hold/checkpoints/100000/pretrained_model`，见 `docs/eval_act_images_all_hold.md`；sim 需要的相机按 checkpoint 的 `config.json` 自动打开）。在工程根目录运行（不需要先 `pixi shell`）：
 
 ```bash
-pixi run bash scripts/demo.sh                 # 1 倍速，默认用重抓数据训练的 ACT（60k）
+pixi run bash scripts/demo.sh                 # 1 倍速，默认用 480 回合训练的图像版 ACT（100k）
+pixi run bash scripts/demo.sh --checkpoint outputs/act_291_envnorm_retry/checkpoints/060000/pretrained_model   # 状态版（用方块坐标）
 pixi run bash scripts/demo.sh --speed 0.5     # 半速，方便看清抓取
 pixi run bash scripts/demo.sh --checkpoint outputs/act_200/checkpoints/040000/pretrained_model
 #   推理服务端口默认 5555，被占用时用 --port N 改

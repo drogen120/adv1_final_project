@@ -3,11 +3,15 @@
 #
 #   pixi run bash scripts/demo.sh [--checkpoint DIR] [--speed X] [--port N] [-- policy_server args]
 #
-#   --checkpoint  pretrained_model directory (default: the recovery-data ACT, 60k steps)
+#   --checkpoint  pretrained_model directory (default: the image-based ACT trained on 480
+#                 episodes, 100k steps; docs/eval_act_images_all_hold.md)
 #   --speed       realtime factor to start with, e.g. 0.5 for half speed (default 1.0);
 #                 can also be changed from the panel
 #   --port        policy server port (default 5555)
 #   after --      passed on to scripts/policy_server.py, e.g. -- --temporal-ensemble 0.01
+#
+# A policy trained on camera images gets them from sim_node: the cameras are read from the
+# checkpoint's config.json.
 #
 # Closing the panel or the viewer, or Ctrl-C here, stops all three. Logs and the recorded
 # runs go to data/demo/.
@@ -16,7 +20,7 @@ set -m   # every background job in its own process group, so it can be stopped w
 
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
-CHECKPOINT=outputs/act_291_envnorm_retry/checkpoints/060000/pretrained_model
+CHECKPOINT=outputs/act_img_all_hold/checkpoints/100000/pretrained_model
 SPEED=1.0
 PORT=5555
 SERVER_ARGS=()
@@ -33,6 +37,13 @@ case "$SPEED" in *.*) ;; *) SPEED="$SPEED.0" ;; esac   # ROS float parameters ne
 
 [ -d "$CHECKPOINT" ] || { echo "checkpoint not found: $CHECKPOINT" >&2; exit 1; }
 [ -x .venv-lerobot/bin/python ] || { echo ".venv-lerobot not found, see README" >&2; exit 1; }
+
+# Cameras the policy was trained on (observation.images.<camera>), e.g. "overview,wrist_cam".
+CAMERAS=$(python -c 'import json, sys
+features = json.load(open(sys.argv[1] + "/config.json"))["input_features"]
+print(",".join(k.split(".", 2)[2] for k in features if k.startswith("observation.images.")))' "$CHECKPOINT")
+SIM_ARGS=()
+[ -n "$CAMERAS" ] && SIM_ARGS=(-p cameras:="$CAMERAS")
 
 set +u   # the ROS setup scripts use unset variables
 source ros2_ws/install/setup.bash
@@ -71,10 +82,10 @@ for _ in $(seq 600); do   # loading torch and the policy takes a while the first
 done
 grep -q '^listening' "$LOG_DIR/policy_server.log" || { echo "policy server did not start" >&2; exit 1; }
 
-echo "sim_node with viewer, speed ${SPEED}x (log: $LOG_DIR/sim_node.log)"
+echo "sim_node with viewer, speed ${SPEED}x${CAMERAS:+, cameras $CAMERAS} (log: $LOG_DIR/sim_node.log)"
 ros2 run --prefix mjpython so101_mujoco sim_node --ros-args \
   -p use_viewer:=true -p sync_mode:=true -p realtime_factor:="$SPEED" \
-  > "$LOG_DIR/sim_node.log" 2>&1 &
+  ${SIM_ARGS[@]+"${SIM_ARGS[@]}"} > "$LOG_DIR/sim_node.log" 2>&1 &
 PIDS+=("$!"); NAMES+=(sim_node)
 
 echo "control panel (log: $LOG_DIR/policy_demo.log)"

@@ -27,6 +27,7 @@ GRASP_OFFSET = 0.009  # m, tool shift from the box centre towards the fixed jaw 
                       #    only ~0.6 mm, so a policy a few mm off lands that jaw on the box
                       #    top. Closing pushes the box against the fixed jaw, so once held it
                       #    is centred on the tool again and the place pose needs no shift.
+RELEASE_LIFT = 0.025  # m, tool raised after opening the jaws on a wedged box (plan_release)
 LIFTED_Z = 0.03   # m, box centre height above which a grasp counts as lifted (rests at 0.02)
 RETURN_SPEED = 0.12   # m/s, average tool speed when going back above the box to grasp again
 
@@ -36,16 +37,27 @@ def smoothstep(n):
     return s * s * (3 - 2 * s)
 
 
-def box_yaw(quat):
-    """Yaw of a box from its (w, x, y, z) quaternion, assuming it stands upright."""
+def _vertical_components(quat):
+    """z components of the box's x, y and z axes (the last row of its rotation matrix)."""
     w, x, y, z = quat
+    return np.array([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)])
+
+
+def box_yaw(quat):
+    """Yaw of a box from its (w, x, y, z) quaternion, as the direction of its x axis; if the
+    box lies on its side with the x axis (nearly) vertical, of its y axis instead (the cube
+    looks the same either way, see box_features)."""
+    w, x, y, z = quat
+    v = np.abs(_vertical_components(quat))
+    if v[0] > v[1] and v[0] > v[2]:
+        return np.arctan2(1 - 2 * (x * x + z * z), 2 * (x * y - w * z))
     return np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
 
 
-def is_upright(quat, max_tilt_deg=10.0):
-    """Whether the box's z axis is within max_tilt_deg of vertical."""
-    w, x, y, z = quat
-    return 1 - 2 * (x * x + y * y) > np.cos(np.radians(max_tilt_deg))
+def is_flat(quat, max_tilt_deg=10.0):
+    """Whether the box rests on one of its faces: one of its axes within max_tilt_deg of
+    vertical (a cube on its side is as good as upright)."""
+    return np.abs(_vertical_components(quat)).max() > np.cos(np.radians(max_tilt_deg))
 
 
 def box_features(pos, quat):
@@ -65,6 +77,13 @@ def grasp_yaw(box_pos, yaw):
     # The box is square, so face normals repeat every 90 degrees.
     k = np.round((natural - yaw) / (np.pi / 2))
     return yaw + k * np.pi / 2
+
+
+def relative_grasp_angle(box_pos, yaw):
+    """g: angle (rad, in [-45, 45] deg) from the arm-perpendicular direction to the expert's
+    grasp direction. Past +-45 degrees the expert switches to the other pair of faces."""
+    natural = np.arctan2(box_pos[1], box_pos[0]) + np.pi / 2
+    return grasp_yaw(box_pos, yaw) - natural
 
 
 def wrap_angle(a):
@@ -104,15 +123,16 @@ class PickPlaceExpert:
     def _frames(self, seconds):
         return max(2, int(round(seconds / self.dt)) + 1)
 
-    def _cartesian(self, q, start, end, yaw, seconds, end_yaw=None):
+    def _cartesian(self, q, start, end, yaw, seconds, end_yaw=None, max_error=None):
         """Joint path for a straight tool line from start to end (turning from yaw to
-        end_yaw on the way), warm-starting from q."""
+        end_yaw on the way), warm-starting from q; max_error (m) overrides max_ik_error."""
         end_yaw = yaw if end_yaw is None else end_yaw
+        max_error = self.max_ik_error if max_error is None else max_error
         path = []
         for s in smoothstep(self._frames(seconds)):
             rot = top_down_rotation(yaw + s * (end_yaw - yaw))
             q, pos_err, ang_err = self.ik.solve(start + s * (end - start), rot, q)
-            if pos_err > self.max_ik_error or ang_err > 0.05:
+            if pos_err > max_error or ang_err > 0.05:
                 raise PlanningError(f'IK failed near {np.round(start + s * (end - start), 3)}: '
                                     f'{pos_err * 1e3:.1f} mm, {np.degrees(ang_err):.1f} deg')
             path.append(q)
@@ -184,6 +204,29 @@ class PickPlaceExpert:
         segments = [(back, q[5], GRIPPER_OPEN)] + self._grasp_segments(back[-1], grasp)
         return _assemble(segments, include_first=False), grasp
 
+    def plan_release(self, q):
+        """Open the jaws where the arm is (joint targets q, 6), then raise the tool by
+        RELEASE_LIFT so that the box drops, e.g. when a missed grasp left it wedged askew
+        between the jaws (once open, it may still lean on the fixed jaw). Without the
+        starting frame."""
+        q = np.asarray(q, dtype=float)
+        pos, rot = self.ik.forward(q[:5])
+        yaw = np.arctan2(rot[1, 2], rot[0, 2])
+        # Far out, the top-down tool cannot go as high (wrist_flex limit): lift less there,
+        # staying well inside the reach so that the regrasp can start from up there.
+        for lift in (RELEASE_LIFT, 0.02, 0.015, 0.01):
+            try:
+                up = self._cartesian(q[:5], pos, pos + [0.0, 0.0, lift], yaw, 0.5,
+                                     max_error=1e-3)
+                break
+            except PlanningError:
+                if lift == 0.01:
+                    raise
+        segments = [(self._hold(q[:5], 0.4), q[5], GRIPPER_OPEN),
+                    (up, GRIPPER_OPEN, GRIPPER_OPEN),
+                    (self._hold(up[-1], 0.4), GRIPPER_OPEN, GRIPPER_OPEN)]
+        return _assemble(segments, include_first=False)
+
     def plan_carry(self, q, grasp, target_pos):
         """From above the grasp point (arm at q[:5]) to above the target, as when carrying
         the box; without the starting frame."""
@@ -232,22 +275,32 @@ class Injection(NamedTuple):
     delay: float = 0.0        # s of carrying the empty gripper towards the target before
                               #   noticing the miss (the policy runs open loop for up to a
                               #   whole action chunk, so it may notice late too)
+    midway: float = 0.0       # jaws also turned back by this fraction of g (the relative
+                              #   grasp angle), towards the arm-perpendicular direction
 
 
-def sample_injection(rng, mode, yaw_error, wrist_tool_error, tool_error, delay):
+def sample_injection(rng, mode, yaw_error, wrist_tool_error, tool_error, delay,
+                     midway_fraction=(0.7, 1.0), midway_tool_error=(0.007, 0.011)):
     """Random Injection of the given mode, with each error uniform in its (low, high) range.
 
     'wrist' mimics ACT's failures at relative grasp angles near 45 degrees: jaws turned by
     yaw_error (deg, either way) and shifted by wrist_tool_error (m) towards the moving jaw,
     which lands the fixed jaw on the box top (turning alone does not miss: closing turns the
     box square to the jaws). 'offset' is a pure shift by tool_error (m), the earlier ACT
-    failure. See docs/eval_act_offset.md.
+    failure. See docs/eval_act_offset.md. 'midway' mimics the image-based ACT near the
+    boundary: wrist_roll halfway between the two pairs of faces, i.e. the jaws turned back by
+    midway_fraction of g, shifted by midway_tool_error (m). Turning alone still lifts the box;
+    its failed grasps were also ~0.7-1.1 cm towards the moving jaw from the expert's (fixed
+    jaw on the box top). See docs/eval_act_images.md.
     """
     if mode == 'wrist':
         injection = Injection(yaw_error=rng.choice([-1, 1]) * np.radians(rng.uniform(*yaw_error)),
                               tool_error=rng.uniform(*wrist_tool_error))
     elif mode == 'offset':
         injection = Injection(tool_error=rng.uniform(*tool_error))
+    elif mode == 'midway':
+        injection = Injection(midway=rng.uniform(*midway_fraction),
+                              tool_error=rng.uniform(*midway_tool_error))
     else:
         raise ValueError(f'unknown injection mode {mode!r}')
     return injection._replace(delay=rng.uniform(*delay))
@@ -259,7 +312,9 @@ class PickPlaceEpisode:
     Call next_rows(box_pos, box_quat) with the latest box pose whenever all rows returned so
     far have been sent (the first time right after the reset); it returns the next joint
     targets, or None when the episode is over. After each grasp it checks that the box was
-    lifted, and if not, grasps again from the box's new pose, up to max_retries times.
+    lifted, and if not, grasps again from the box's new pose, up to max_retries times. If the
+    box is not resting on a face then (usually wedged askew between the closed jaws), it
+    first opens the jaws and raises the tool to drop it, and gives up only if it still is not.
     PlanningError propagates. Afterwards:
         failure      None, or why the episode stopped early
         attempts     number of grasps
@@ -292,8 +347,13 @@ class PickPlaceEpisode:
         return None
 
     def _regrasp(self, box_pos, box_quat):
-        if not is_upright(box_quat):
-            return self._stop('box knocked over')
+        if not is_flat(box_quat):
+            if self.phase == 'released':
+                return self._stop('box knocked over')
+            if self.retry_frame is None:
+                self.retry_frame = self.rows_sent
+            self.phase = 'released'
+            return self.expert.plan_release(self.last_row)
         rows, self.grasp = self.expert.plan_regrasp(self.last_row, box_pos, box_quat)
         if self.retry_frame is None:
             self.retry_frame = self.rows_sent
@@ -304,8 +364,11 @@ class PickPlaceEpisode:
     def _next(self, box_pos, box_quat):
         if self.phase == 'start':
             injection = self.injection or Injection()
+            yaw_error = injection.yaw_error
+            if injection.midway:
+                yaw_error -= injection.midway * relative_grasp_angle(box_pos, box_yaw(box_quat))
             rows, self.grasp = self.expert.plan_pick(self.q_start, box_pos, box_quat,
-                                                     injection.yaw_error, injection.tool_error)
+                                                     yaw_error, injection.tool_error)
             self.attempts = 1
             self.phase = 'grasped'
             return rows
@@ -323,7 +386,7 @@ class PickPlaceEpisode:
                 self.phase = 'missed'
                 return self.expert.plan_carry(self.last_row, self.grasp, self.target_pos)[:n]
             return self._regrasp(box_pos, box_quat)
-        if self.phase == 'missed':
+        if self.phase in ('missed', 'released'):
             return self._regrasp(box_pos, box_quat)
         return None  # placed
 
