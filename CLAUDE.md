@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Physical AI 课程期末作业（个人独立完成）：MuJoCo 仿真 SO-101 机械臂 → ROS 2 采集示教数据 → LeRobot 训练 ACT 策略 → 策略在仿真中闭环控制。
-整体计划见 `physical_ai_final_project_plan.md`，使用方法与接口见 `README.md`。用户使用中文交流。
+整体计划见 `physical_ai_final_project_plan.md`，使用方法与接口见 `README_CN.md`（默认的 `README.md` 是日语版，两者内容保持一致）。用户使用中文交流。
 
 ## 当前进度
 

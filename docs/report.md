@@ -245,12 +245,12 @@ MuJoCo Menagerie 自带的 SO-101 场景中，方块放在 x = 0.5 m 处，超�
 
 ## 附录：复现
 
-全部代码在 GitHub 仓库 <https://github.com/drogen120/adv1_final_project> 中，环境搭建和各命令的详细用法见仓库的 `README.md`。
+全部代码在 GitHub 仓库 <https://github.com/drogen120/adv1_final_project> 中，环境搭建和各命令的详细用法见仓库的 `README_CN.md`。
 
 | 步骤 | 命令 / 文件 |
 |---|---|
 | 环境 | `pixi install`，`pixi run build` |
-| 采集示教 | `collect_demos`（命令见 `README.md`） |
+| 采集示教 | `collect_demos`（命令见 `README_CN.md`） |
 | 导出数据集 | `export_dataset` → `scripts/npz_to_lerobot.py` |
 | 训练 | `notebooks/train_act_colab.ipynb`（状态版）、`notebooks/train_act_images_colab.ipynb`（图像版） |
 | 评估 | `scripts/run_evals.sh` |
