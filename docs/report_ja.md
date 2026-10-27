@@ -1,8 +1,6 @@
 # ROS 2 と MuJoCo による SO-101 ロボットアームの模倣学習：ピック・アンド・プレース課題
 
-Physical AI 講義 期末課題レポート（個人課題）
-
-ソースコード：<https://github.com/drogen120/adv1_final_project>
+Physical AI 応用編1 最終課題レポート
 
 ## 1. 概要
 
@@ -245,7 +243,7 @@ MuJoCo Menagerie に付属する SO-101 のシーンでは、キューブが x =
 
 ## 付録：再現手順
 
-すべてのコードは GitHub リポジトリ <https://github.com/drogen120/adv1_final_project> にある。環境構築と各コマンドの詳しい使い方は、リポジトリの `README.md` を参照されたい。
+環境構築と各コマンドの詳しい使い方は、ソースコードの `README.md` を参照されたい。
 
 | 手順 | コマンド / ファイル |
 |---|---|
@@ -257,4 +255,3 @@ MuJoCo Menagerie に付属する SO-101 のシーンでは、キューブが x =
 | 対話型デモ | `pixi run bash scripts/demo.sh` |
 | レポートの図 | `pixi run python scripts/make_report_figures.py --lang ja` |
 
-各段階の詳しい評価記録は `docs/eval_*.md`（中国語）にある。
