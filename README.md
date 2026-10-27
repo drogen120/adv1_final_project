@@ -261,6 +261,8 @@ Colab（GPU）上で `notebooks/train_act_colab.ipynb` を実行する。`data/d
 
 学習曲線は W&B の `so101-act` プロジェクトに記録する（run 名は `act_200_envnorm` / `act_50`、以前の run は `act_200`。Colab の Secrets に `WANDB_API_KEY` を設定する必要があり、使わない場合は notebook の `USE_WANDB` を `False` にする）。checkpoint は W&B にはアップロードせず、Drive の `so101_act/outputs/<run>/checkpoints/NNNNNN/pretrained_model` に出力する。最後のセルですべての `pretrained_model` をまとめてダウンロードできる。ローカルではプロジェクトのルートの `outputs/`（git 管理外）に展開する。
 
+学習済みモデルのパラメータ（checkpoint）は Google Drive で共有している：[https://drive.google.com/drive/folders/10yvLc3Go5icyDsADPANyEJj__5-9XT9s?usp=drive_link](https://drive.google.com/drive/folders/10yvLc3Go5icyDsADPANyEJj__5-9XT9s?usp=drive_link)。ダウンロードしたものをプロジェクトのルートの `outputs/` に展開すれば、そのまま評価やデモに使える。
+
 ### 閉ループ評価（M4）
 
 LeRobot と torch は pixi 環境に入れない。方策は別の venv で `scripts/policy_server.py` が読み込み、ROS ノード `policy_eval` はローカル TCP（1 行に 1 つの JSON）でそこに行動を問い合わせる。

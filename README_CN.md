@@ -261,6 +261,8 @@ pixi run python scripts/visualize_demos.py 0-9 --stride 2 --speed 2   # 隔帧�
 
 训练曲线记录到 W&B 的 `so101-act` 项目（run 名为 `act_200_envnorm` / `act_50`，此前的 run 为 `act_200`；需在 Colab Secrets 中设置 `WANDB_API_KEY`，不用时把 notebook 中的 `USE_WANDB` 改为 `False`）。checkpoint 不上传 W&B，输出写在 Drive 的 `so101_act/outputs/<run>/checkpoints/NNNNNN/pretrained_model`，最后一个单元把所有 `pretrained_model` 打包下载。在本机解压到工程根目录的 `outputs/`（不纳入 git）。
 
+训练好的模型参数（checkpoint）已在 Google Drive 共享：[https://drive.google.com/drive/folders/10yvLc3Go5icyDsADPANyEJj__5-9XT9s?usp=drive_link](https://drive.google.com/drive/folders/10yvLc3Go5icyDsADPANyEJj__5-9XT9s?usp=drive_link)。下载后解压到工程根目录的 `outputs/` 即可直接用于评估和演示。
+
 ### 闭环评估（M4）
 
 LeRobot 和 torch 不装进 pixi 环境：策略在独立 venv 中由 `scripts/policy_server.py` 加载，ROS 节点 `policy_eval` 通过本地 TCP（每行一个 JSON）向它请求动作。
