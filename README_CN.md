@@ -8,20 +8,36 @@ Physical AI 课程期末作业。在 MuJoCo 中仿真 SO-101 机械臂，通过 
 
 ## 进度
 
-| 里程碑   | 内容                                              | 状态                     |
-| ----- | ----------------------------------------------- | ---------------------- |
-| M0 环境 | Mac 上跑通 ROS 2 与 MuJoCo，加载 SO-101                | ✅ 完成                   |
-| M1 接口 | MuJoCo 节点发布 `/joint_states`，接收 `/joint_command` | ✅ 完成                   |
-| M2 数据 | 脚本策略录制 rosbag，转换为 LeRobot 数据集                   | ✅ 完成                   |
-| M3 训练 | 在 Colab 上训练 ACT（状态输入），对比 50 / 200 回合            | ✅ 完成                   |
-| M4 闭环 | 策略节点控制仿真中的 SO-101，统计成功率                         | ✅ 完成（最好 50/50，见下文“结果”） |
-| 改进    | 抓取偏移、方块特征归一化、失败后重新抓取的示教数据                       | ✅ 完成                   |
-| 演示    | 交互演示界面：在面板上摆放方块，实时观看策略                          | ✅ 完成（见“交互演示”）          |
-| M5 收尾 | 整理报告与演示视频；可选改进与扩展                               | ⏳ 进行中                  |
+| 里程碑 | 内容 | 状态 |
+|---|---|---|
+| M0 环境 | Mac 上跑通 ROS 2 与 MuJoCo，加载 SO-101 | ✅ 完成 |
+| M1 接口 | MuJoCo 节点发布 `/joint_states`，接收 `/joint_command` | ✅ 完成 |
+| M2 数据 | 脚本策略录制 rosbag，转换为 LeRobot 数据集 | ✅ 完成 |
+| M3 训练 | 在 Colab 上训练 ACT（状态输入），对比 50 / 200 回合 | ✅ 完成 |
+| M4 闭环 | 策略节点控制仿真中的 SO-101，统计成功率 | ✅ 完成（见下文“结果”） |
+| 改进 | 抓取偏移、方块特征归一化、失败后重新抓取的示教数据 | ✅ 完成 |
+| 图像输入 | 观测去掉方块坐标，只用关节角 + 两个相机（`overview` / `wrist_cam`）的图像训练 ACT；补充完成后保持和边界附近的数据 | ✅ 完成（196/200，最终模型） |
+| 演示 | 交互演示界面：在面板上摆放方块，实时观看策略 | ✅ 完成（见“交互演示”） |
+| M5 收尾 | 整理报告与演示视频 | ✅ 完成（报告：[docs/report.pdf](docs/report.pdf)，日语版 [docs/report_ja.pdf](docs/report_ja.pdf)） |
 
 ## 结果
 
-ACT（关节角 + 方块特征，无图像），seed 100 的 50 个回合，`sim_node` 同步模式下闭环评估。**当前最好的模型是 `act_291_envnorm_retry`（60k），50/50 成功**：
+在训练没用过的方块摆放上，`sim_node` 同步模式下闭环评估。共 3 组 200 个回合：seed 100 普通摆放 50 个、seed 100 边界摆放 50 个（`box_rel_yaw_range:=[35.0,55.0]`，|g| ∈ [35°, 45°]，换抓法处的难摆放）、seed 101 普通摆放 100 个。
+
+**最终模型是图像版 `act_img_all_hold`（100k），不给方块坐标，196/200 成功**：
+
+| 模型 | 观测 | 训练数据 | seed 100 普通 | 边界 | seed 101 | 合计 | 成功回合的放置误差（平均） |
+|---|---|---|---|---|---|---|---|
+| **act_img_all_hold（100k，最终模型）** | 关节角 + `overview` + `wrist_cam`（240×320 RGB），无方块坐标 | 480 回合（完成后保持 2 s + 边界数据） | 47/50 | **50/50** | 99/100 | **196/200 = 98%** | 0.64–0.69 cm |
+| act_img_291（60k） | 同上 | 291 回合（与下面 act_291_envnorm_retry 同一批示教） | 49/50 | 47/50 | 98/100 | 194/200 = 97% | 0.54–0.63 cm |
+| act_291_envnorm_retry（60k，对照） | 关节角 + 方块位姿 | 291 回合 | 50/50 | 50/50 | 100/100 | 200/200 = 100% | 0.48–0.60 cm |
+
+- 图像模型只要抓起来，放置精度和速度与状态模型基本相同。推理约 7–8 ms/步（含两张图像的 ResNet18，CPU），赶得上 50 Hz 控制。
+- act_img_291 成功并回到初始姿态后，几乎每回合都会再朝方块伸手（seed 100 上 49/49），原因是示教末尾只保持 0.5 s，比 1 s 的动作块短。保持改为 2 s 后，act_img_all_hold 降到 0/196。
+- act_img_291 的失败集中在边界附近（|g| ≳ 35°）。加入边界数据（正常 100 + `midway` 重抓 86 回合）后，边界评估从 47/50 提高到 50/50（配对 0 对 3，p = 0.25，尚不显著）。
+- act_img_all_hold 剩下 4 个失败：搬运途中掉落 2 个、手腕停在两种抓法中间 1 个、g ≈ 26° 手腕转过头 1 个。
+
+状态版模型的改进过程（seed 100 的 50 个回合）：
 
 | 模型 | 训练数据 | checkpoint | 成功率 | 成功回合的放置误差（平均） |
 |---|---|---|---|---|
@@ -40,11 +56,14 @@ ACT（关节角 + 方块特征，无图像），seed 100 的 50 个回合，`sim
 - 加入“第一次抓取失败 → 重新抓取”的示教（`data/demos_retry`，seed 3，采集 100 回合，重抓成功的 91 回合只导出重抓之后的片段）后，`act_291_envnorm_retry` 在 seed 100 的 50 回合上全部成功，而且都是第一次就抓起（`regrasped` = 0，全部在 600 帧内完成），放置误差也是各模型中最小的。在 seed 101 的 100 个回合上（其中 24 个 |g| ≥ 35°）也是 100/100。
 - 对照：不含重抓数据的偏移模型（act_200，60k）在边界评估（|g| ∈ [35°, 45°]）上 49/50，但其中 14 回合需要重抓（它没学过重抓，是把整个任务从头再做一遍），600 帧内只成功 36 个。
 
-详细分析：
+报告与详细分析：
 
+- [docs/report.pdf](docs/report.pdf)（[Markdown 版](docs/report.md)）：最终报告；日语版 [docs/report_ja.pdf](docs/report_ja.pdf)
 - [docs/eval_act_200_failure_analysis.md](docs/eval_act_200_failure_analysis.md)：act_200 的失败原因（固定爪压在方块顶面）与改进建议
 - [docs/eval_act_50_vs_200.md](docs/eval_act_50_vs_200.md)：50 / 200 回合的对比
 - [docs/eval_act_offset.md](docs/eval_act_offset.md)：加抓取偏移后的评估，以及 ±45° 抓法切换处的新失败机制
+- [docs/eval_act_images.md](docs/eval_act_images.md)：图像版 ACT（291 回合）与状态模型的对比
+- [docs/eval_act_images_all_hold.md](docs/eval_act_images_all_hold.md)：480 回合图像版 ACT（最终模型）的评估与失败分析
 
 ## 环境
 
@@ -68,7 +87,12 @@ adv1_final_project/
 ├── docs/
 │   ├── eval_act_200_failure_analysis.md   # ACT 200 回合评估的失败分析与改进建议
 │   ├── eval_act_50_vs_200.md              # ACT 50 / 200 回合训练的闭环评估对比
-│   └── eval_act_offset.md                 # 加抓取偏移后重新训练的 ACT（40k / 60k）评估与新的失败机制
+│   ├── eval_act_offset.md                 # 加抓取偏移后重新训练的 ACT（40k / 60k）评估与新的失败机制
+│   ├── eval_act_images.md                 # 图像版 ACT（291 回合）评估及与状态模型的对比
+│   ├── eval_act_images_all_hold.md        # 图像版 ACT（480 回合，最终模型）评估
+│   ├── report.md / report.pdf             # 最终报告（中文）
+│   ├── report_ja.md / report_ja.pdf       # 最终报告（日语）
+│   └── figures/, figures_ja/              # 报告的插图
 ├── notebooks/
 │   └── train_act_colab.ipynb              # 在 Colab 上训练 ACT（M3）
 ├── scripts/
