@@ -46,7 +46,6 @@ import threading
 import time
 
 import mujoco
-import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped
@@ -56,9 +55,10 @@ from sensor_msgs.msg import Image, JointState
 from std_srvs.srv import Trigger
 
 from .collect_demos import pose_to_array, stamp_ns
-from .expert import box_features, is_success
+from .expert import box_features
 from .export_dataset import JOINT_NAMES, ordered
 from .kinematics import TopDownIK
+from .rollouts import episode_result, save_rollouts, summarize
 
 
 class PolicyClient:
@@ -144,7 +144,6 @@ class PolicyEvaluator(Node):
         self.pending_state = None   # /joint_states waiting for the /box_pose with its stamp
         self.active = False
         self.frames = None          # recorded (state, env, action, stamp) of the episode
-        self.max_box_z = 0.0
         self.policy_time = 0.0
         self.done = threading.Event()
 
@@ -202,7 +201,6 @@ class PolicyEvaluator(Node):
         self.cmd_pub.publish(cmd)
 
         self.frames.append((state, env, cmd.position, t))
-        self.max_box_z = max(self.max_box_z, box_pos[2])
         if self._episode_over():
             self.active = False
             self.done.set()
@@ -252,7 +250,7 @@ class PolicyEvaluator(Node):
         self.policy.reset()
         with self.lock:
             box_init, _ = pose_to_array(self.last_box)
-            self.frames, self.max_box_z, self.policy_time = [], 0.0, 0.0
+            self.frames, self.policy_time = [], 0.0
             self.pending_state = None
             self.done.clear()
             self.active = True
@@ -271,38 +269,9 @@ class PolicyEvaluator(Node):
         with self.lock:
             box_final, _ = pose_to_array(self.last_box)
             frames = self.frames
-        success = is_success(box_final, self.target_pos)
-        result = {
-            'box_init': box_init.round(4).tolist(),
-            'box_final': box_final.round(4).tolist(),
-            'success': success,
-            'target_dist': round(float(np.linalg.norm(box_final[:2] - self.target_pos[:2])), 4),
-            'lifted': bool(self.max_box_z > 0.04),   # box centre rests at 0.02 m
-            'grasp_attempts': self._grasp_attempts(frames),
-            'success_frame': self._success_frame(frames),
-            'frames': len(frames),
-            'policy_ms': round(1e3 * self.policy_time / max(1, len(frames)), 2),
-        }
+        result = episode_result(frames, box_init, box_final, self.target_pos, self.kinematics,
+                                self.policy_time)
         return result, frames
-
-    def _grasp_attempts(self, frames, threshold=0.5, max_dist=0.04, max_height=0.05):
-        """Times the gripper command went from open to closed (across threshold, rad) with
-        the tool within max_dist (m) of the box horizontally and below max_height (m), i.e.
-        not when the gripper closes on the way back to the start pose."""
-        grip = np.array([action[5] for _, _, action, _ in frames])
-        attempts = 0
-        for i in np.flatnonzero((grip[:-1] >= threshold) & (grip[1:] < threshold)) + 1:
-            state, env, _, _ = frames[i]
-            tool, _ = self.kinematics.forward(np.array(state[:5]))
-            attempts += bool(np.linalg.norm(tool[:2] - env[:2]) < max_dist and tool[2] < max_height)
-        return attempts
-
-    def _success_frame(self, frames):
-        """First frame from which the box is on the target (expert.is_success) to the end."""
-        ok = [is_success(env[:3], self.target_pos) for _, env, _, _ in frames]
-        if not ok[-1]:
-            return None
-        return len(ok) - int(np.argmin(ok[::-1])) if not all(ok) else 0
 
     def run(self):
         out_dir = os.path.abspath(self.get_parameter('output_dir').value)
@@ -329,40 +298,18 @@ class PolicyEvaluator(Node):
 
         save_rollouts(os.path.join(out_dir, 'rollouts.npz'), episode_frames)
 
-        n_success = sum(r['success'] for r in results)
-        n_lifted = sum(r['lifted'] for r in results)
-        n_regrasped = sum(r['grasp_attempts'] > 1 for r in results)
-        n_recovered = sum(r['grasp_attempts'] > 1 and r['success'] for r in results)
-        n_by_600 = sum(r['success'] and r['success_frame'] < 600 for r in results)
-        summary = {'episodes': num_episodes, 'success_rate': n_success / num_episodes,
-                   'successes': n_success, 'successes_by_frame_600': n_by_600,
-                   'lifted': n_lifted, 'regrasped': n_regrasped, 'recovered': n_recovered}
+        summary = summarize(results)
         with open(os.path.join(out_dir, 'summary.json'), 'w') as f:
             json.dump(summary, f, indent=2)
+        n_success, n_recovered = summary['successes'], summary['recovered']
+        n_lifted, n_regrasped = summary['lifted'], summary['regrasped']
+        n_by_600 = summary['successes_by_frame_600']
         self.get_logger().info(f'Success rate: {n_success}/{num_episodes} '
-                               f'({100 * n_success / num_episodes:.0f}%), '
+                               f'({100 * n_success / num_episodes:.0f}%; strict '
+                               f'{summary["strict_successes"]}), '
                                f'box lifted in {n_lifted}/{num_episodes}, '
                                f'regrasped in {n_regrasped} ({n_recovered} succeeded), '
                                f'{n_by_600} succeeded within 600 frames')
-
-
-def save_rollouts(path, episode_frames):
-    """Write the frames of each episode (lists of (state, env, action, stamp)) to path, in the
-    format of export_dataset."""
-    columns = {k: [] for k in ['observation_state', 'observation_environment_state', 'action',
-                               'episode_index', 'frame_index', 'timestamp']}
-    for episode, frames in enumerate(episode_frames):
-        state, env, action, stamps = map(np.array, zip(*frames))
-        columns['observation_state'].append(state)
-        columns['observation_environment_state'].append(env)
-        columns['action'].append(action)
-        columns['episode_index'].append(np.full(len(frames), episode))
-        columns['frame_index'].append(np.arange(len(frames)))
-        columns['timestamp'].append((stamps - stamps[0]) * 1e-9)
-    arrays = {k: np.concatenate(v) for k, v in columns.items()}
-    for k in ['observation_state', 'observation_environment_state', 'action', 'timestamp']:
-        arrays[k] = arrays[k].astype(np.float32)
-    np.savez_compressed(path, **arrays, fps=50.0, joint_names=np.array(JOINT_NAMES))
 
 
 def spin_quietly(executor):

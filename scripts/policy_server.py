@@ -30,74 +30,25 @@ import argparse
 import base64
 import functools
 import json
+import os
 import socket
 import socketserver
 import sys
 import time
 
-# From a `pixi shell`, PYTHONPATH points at the ROS environment's site-packages, whose numpy
-# and libomp clash with the venv's torch (OMP Error #15). Keep the two environments apart.
-# Only drop site-packages: the venv may be built on pixi's Python, whose stdlib is under .pixi.
-sys.path = [p for p in sys.path if not ('.pixi' in p and 'site-packages' in p)]
-
 print = functools.partial(print, flush=True)  # the log is usually redirected to a file
 
+# lerobot_policy keeps the pixi environment's site-packages out of sys.path (OMP Error #15).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from lerobot_policy import Policy, default_device  # noqa: E402  (first: fixes sys.path)
 import numpy as np  # noqa: E402
-import torch  # noqa: E402
-from lerobot.configs.policies import PreTrainedConfig  # noqa: E402
-from lerobot.policies import get_policy_class, make_pre_post_processors  # noqa: E402
 
 
-class Policy:
-
-    def __init__(self, path, device, n_action_steps=None, temporal_ensemble=None):
-        config = PreTrainedConfig.from_pretrained(path)
-        config.device = device
-        if temporal_ensemble is not None:
-            config.temporal_ensemble_coeff = temporal_ensemble
-            config.n_action_steps = 1
-        elif n_action_steps is not None:
-            config.n_action_steps = n_action_steps
-        self.policy = get_policy_class(config.type).from_pretrained(path, config=config)
-        self.policy.to(device)
-        self.device = device
-        override = {'device_processor': {'device': device}}
-        self.preprocessor, self.postprocessor = make_pre_post_processors(
-            config, pretrained_path=path, preprocessor_overrides=override,
-            postprocessor_overrides=override)
-        self.config = config
-        features = config.input_features
-        self.uses_env = 'observation.environment_state' in features
-        self.cameras = [k.removeprefix('observation.images.') for k in features
-                        if k.startswith('observation.images.')]
-        self.image_shapes = {c: tuple(features[f'observation.images.{c}'].shape)
-                             for c in self.cameras}  # (C, H, W)
-
-    def info(self):
-        return {'state': True, 'environment_state': self.uses_env, 'cameras': self.cameras}
-
-    def reset(self):
-        self.policy.reset()
-        self.preprocessor.reset()
-        self.postprocessor.reset()
-
-    @torch.inference_mode()
-    def act(self, state, environment_state=None, images=None):
-        batch = {'observation.state': torch.tensor([state], dtype=torch.float32)}
-        if self.uses_env:
-            batch['observation.environment_state'] = torch.tensor([environment_state],
-                                                                  dtype=torch.float32)
-        for cam in self.cameras:
-            image = images[cam]
-            h, w, c = image['shape']
-            if (c, h, w) != self.image_shapes[cam]:
-                raise ValueError(f'{cam}: got a {h}x{w}x{c} image, the policy was trained on '
-                                 f'{self.image_shapes[cam]} (C, H, W)')
-            pixels = np.frombuffer(base64.b64decode(image['data']), dtype=np.uint8)
-            pixels = torch.from_numpy(pixels.reshape(h, w, c).copy())
-            batch[f'observation.images.{cam}'] = (pixels.permute(2, 0, 1).float() / 255.0)[None]
-        action = self.policy.select_action(self.preprocessor(batch))
-        return self.postprocessor(action)[0].cpu().tolist()
+def decode_images(images):
+    """{camera: {"shape": [H, W, 3], "data": base64 rgb8}} -> {camera: (H, W, 3) uint8}."""
+    return {cam: np.frombuffer(base64.b64decode(image['data']), dtype=np.uint8)
+            .reshape(image['shape'])
+            for cam, image in (images or {}).items()}
 
 
 def make_handler(policy):
@@ -123,7 +74,7 @@ def make_handler(policy):
                 else:
                     reply = {'action': policy.act(request['state'],
                                                   request.get('environment_state'),
-                                                  request.get('images'))}
+                                                  decode_images(request.get('images')))}
                     n += 1
                     busy += time.perf_counter() - start
                 self.wfile.write((json.dumps(reply) + '\n').encode())
@@ -131,13 +82,6 @@ def make_handler(policy):
                 print(f'client disconnected after {n} steps, {1e3 * busy / n:.1f} ms/step')
 
     return Handler
-
-
-def default_device():
-    if torch.cuda.is_available():
-        return 'cuda'
-    # Small batch-1 models are usually no faster on MPS than on the CPU.
-    return 'cpu'
 
 
 def main():

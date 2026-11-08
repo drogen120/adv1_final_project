@@ -64,6 +64,7 @@ Physical AI 课程期末作业。在 MuJoCo 中仿真 SO-101 机械臂，通过 
 - [docs/eval_act_offset.md](docs/eval_act_offset.md)：加抓取偏移后的评估，以及 ±45° 抓法切换处的新失败机制
 - [docs/eval_act_images.md](docs/eval_act_images.md)：图像版 ACT（291 回合）与状态模型的对比
 - [docs/eval_act_images_all_hold.md](docs/eval_act_images_all_hold.md)：480 回合图像版 ACT（最终模型）的评估与失败分析
+- [docs/rlt_overview.html](docs/rlt_overview.html)：在线强化学习（RL Token）总览：系统结构、动作数据流、β 的作用、实验结果和下一步建议
 
 ## 环境
 
@@ -99,11 +100,20 @@ adv1_final_project/
 │   ├── check_expert.py                    # 不用 ROS，在整个随机范围上离线验证脚本专家（可模拟沿开合方向的误差）
 │   ├── demo.sh                            # 交互演示：一条命令启动推理服务、带 viewer 的仿真和控制面板
 │   ├── check_retry.py                     # 不用 ROS，离线验证失败注入与重新抓取（选注入范围用）
+│   ├── collect_embeddings.py              # 沿 ACT rollout 截取编码器输出（训练 RL token 用）
+│   ├── compare_evals.py                   # 逐回合比较两次评估（结果是否一致、轨迹从哪一帧开始分开）
+│   ├── lerobot_policy.py                  # 用 numpy 输入调用训练好的 LeRobot 策略（policy_server / sim_eval 共用）
 │   ├── grasp_metrics.py                   # 评估的抓取指标（开合方向偏差、朝向误差、首次接触）与逐回合配对比较
 │   ├── npz_to_lerobot.py                  # npz → LeRobot 数据集（在装有 LeRobot 的环境中运行）
 │   ├── policy_server.py                   # 推理服务：在 LeRobot venv 中加载策略，通过本地 TCP 提供动作
 │   ├── render_eval_cases.py               # 把评估中的失败回合和几个成功回合渲染成 mp4（带抓取特写）
+│   ├── rejudge_evals.py                   # 用当前的判定（含严格成功）重新判定已保存的评估
 │   ├── render_policy_cameras.py           # 重新渲染图像策略在某个评估回合中看到的相机画面（overview / wrist_cam）
+│   ├── rl_token.py                        # RL token：冻结 ACT 编码器输出上的单 token 瓶颈
+│   ├── rlt.py                             # 在线 RL：ACT 外包一层的环境（关键阶段交给 actor）、残差 actor、TD3 critic
+│   ├── sim_eval.py                        # 不用 ROS 的闭环评估（结果与 policy_eval 逐帧一致，快约 10 倍）
+│   ├── train_rl_token.py                  # 训练 RL token，并用探针检查 z_rl 保留了哪些抓取信息
+│   ├── train_rlt.py                       # 在线 RL 训练与评估（actor 照抄参考动作时与基线逐帧一致）
 │   └── visualize_demos.py                 # 把采集的数据回放成动画（mp4 或窗口）
 ├── data/                                  # 采集的数据（不纳入 git）
 └── ros2_ws/                               # colcon 工作区
@@ -120,12 +130,14 @@ adv1_final_project/
             │   └── assets/*.stl
             └── so101_mujoco/
                 ├── sim_node.py            # MuJoCo 仿真节点
+                ├── pick_place_sim.py      # 不依赖 ROS 的仿真核心（PickPlaceSim，sim_node 也用它）和回合环境（PickPlaceEnv）
                 ├── wave_demo.py           # 发送正弦关节指令的演示节点
                 ├── kinematics.py          # 俯视抓取的数值 IK
                 ├── expert.py              # 脚本专家：规划整条抓取放置轨迹
                 ├── collect_demos.py       # 采集节点：专家示教 → 每回合一个 rosbag
                 ├── export_dataset.py      # rosbag → 对齐的训练帧（.npz）
                 ├── policy_eval.py         # 闭环评估节点：调用推理服务控制仿真，统计成功率
+                ├── rollouts.py            # 评估回合的判定与保存（policy_eval / sim_eval 共用）
                 └── policy_demo.py         # 交互演示节点：Tk 控制面板摆放方块，实时运行策略
 ```
 
@@ -324,6 +336,43 @@ ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=
   抓取指标和两次评估的逐回合配对比较：`pixi run python scripts/grasp_metrics.py data/eval/act_200_40k data/eval/act_200_60k`。
 
 同一 seed 下每次评估的方块摆放序列相同，不同 checkpoint / 执行方式的成功率可以直接对比（改了 `box_radius_range` 后，各回合的方位角和朝向不变，只有 r 会变）。
+
+### 不用 ROS 的闭环评估
+
+`so101_mujoco/pick_place_sim.py` 把仿真核心从 ROS 中分离出来：`PickPlaceSim`（重置、随机摆放方块、按帧步进）同时被 `sim_node` 使用，`PickPlaceEnv` 在它上面按 `policy_eval` 的时序跑回合（重置后等 `start_frame` 帧再给第一个观测，结束后再等 2 帧判定）。只依赖 mujoco 和 numpy，可以直接在 `.venv-lerobot` 里和策略放在同一个进程中运行（venv 里装了同版本的 mujoco 3.15.0）。后续的在线强化学习用的就是这个环境。
+
+```bash
+.venv-lerobot/bin/python scripts/sim_eval.py outputs/act_img_all_hold/checkpoints/100000/pretrained_model \
+    --seed 100 --episodes 50 --output-dir data/eval_py/act_img_all_hold_100k
+#   边界评估：--rel-yaw 35 55；每块执行步数：--n-action-steps 10（不支持时间集成）
+# 与 ROS 评估逐回合对比
+python3 scripts/compare_evals.py data/eval/act_img_all_hold_100k data/eval_py/act_img_all_hold_100k
+```
+
+输出（`episodes.jsonl` / `summary.json` / `rollouts.npz`）的格式与 `policy_eval` 相同，`grasp_metrics.py`、`render_eval_cases.py` 等可以直接用。只在策略要预测新动作块的帧渲染图像，图像策略每回合（900 帧）约 2 s，ROS 版本约 30 s。
+
+**与 ROS 评估的一致性**（`act_img_all_hold` 100k，seed 100 普通 / 边界 / seed 101，共 200 回合）：方块位置全部相同；187 个回合的轨迹与 ROS 评估 900 帧**逐帧完全相同**（162 个对应 `--start-frame 7`，25 个对应 6，因为 ROS 那边重置后第一个应答的帧受线程竞争影响，是第 7 帧或第 6 帧）。另外 13 个回合中，有 7 个正好是 `sim_node` 日志里出现同步超时（`stepping on`，有一帧没等到指令）的回合，从那一帧开始分开；剩下 6 个所在的那次评估没有保留日志。成功数：ROS 196/200，`sim_eval`（start_frame 7）196/200。
+
+**严格成功**（在线 RL 用的更严的判定，`rollouts.py` 的 `strict_success`）：在成功的基础上，第一次抓取要在第 200 帧之前开始闭合（专家固定在第 156 帧），且闭合时方块中心在夹爪平面内的横向偏移（工具 y 轴方向）不超过 3 mm（专家在 0.2 mm 以内）。依据：在 `act_img_all_hold` 100k 的成功回合里，闭合时的 yaw 误差和放置误差几乎无关（r = −0.09，夹爪合拢时会把立方体拨正），横向偏移则明显相关（r = +0.59）；边界上（|g| ≥ 30°）约 20% 的回合会在方块上方犹豫，到第 200 帧以后才闭合。`episodes.jsonl` 中另有 `grasp_frame`、`grasp_lateral`（m）。以前的评估可以用 `scripts/rejudge_evals.py` 重新判定（`--write` 写回）。同一模型三组共 200 回合：每块执行 50 步时成功 196、严格成功 140；执行 30 步时成功 198、严格成功只有 109（横向偏移变大，配对比较 p < 1e-6）。
+
+### 在线强化学习（RL Token，进行中）
+
+参照 RL Token 论文（`rlt.pdf`），在冻结的图像 ACT（`act_img_all_hold` 100k，每块执行 50 步）上训练小的 actor / critic，目标是提高**严格成功**（见上文），重点是边界分布。
+
+1. `scripts/collect_embeddings.py`：沿 ACT 的 rollout，每 10 帧截取一次 ACT 编码器输出（162 × 512）→ `data/rlt/emb_normal`（seed 1000）、`emb_boundary`（seed 1001，`--rel-yaw 30 60`）。
+2. `scripts/train_rl_token.py`：训练 RL token（单 token 瓶颈，重建损失）→ `outputs/rlt/rl_token_v0.pt`。留出回合重建 R² 0.96；抓取前用探针预测横向偏移 R² 0.81（只用关节角 0.51）。
+3. `scripts/train_rlt.py`（`scripts/rlt.py`）：第 100–240 帧每 10 帧由 actor 在 ACT 参考动作（队列里接下来的 10 步）上加残差修正，TD3 双 critic。actor 不修正时与 `sim_eval` 逐帧一致。
+
+```bash
+.venv-lerobot/bin/python scripts/train_rlt.py outputs/act_img_all_hold/checkpoints/100000/pretrained_model \
+    --token outputs/rlt/rl_token_v0.pt --output-dir outputs/rlt/run1 \
+    --action offset --reward shaped --noise 0.005 --warmup 100 --scale 0.05 --episodes 600
+# 评估（跑满 900 帧，与 sim_eval 相同的判定）
+... --eval-only --full-eval --action offset --agent outputs/rlt/run1/agent_600.pt \
+    --eval-seed 101 --eval-episodes 100 --output-dir outputs/rlt/eval_run1_b101
+```
+
+与论文的不同：照论文设定（actor 每 10 帧输出 10 × 6 修正、0/1 奖励）训练 1000 回合没有学到东西；改成每个 10 帧段只输出一个 6 维关节偏移、加到这 10 帧的每一步上（`--action offset`）、训练奖励用横向偏移的平滑版本（`--reward shaped`）后才有效。当前结果（run1 最终模型，没用过的方块，与基线逐回合配对）：边界 seed 101 100 回合严格成功 67 → 74（+8/−1，p = 0.04），普通 seed 100 50 回合 36 → 38，成功数没有下降。剩下的失败主要是抓取过晚（修正范围管不到）。
 
 ### 交互演示
 

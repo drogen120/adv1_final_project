@@ -12,6 +12,9 @@ Topics
 Services
               /reset          std_srvs/Trigger            reset the scene to its initial state
 
+The physics and the box placement are pick_place_sim.PickPlaceSim, which can also be run
+without ROS (pick_place_sim.PickPlaceEnv, scripts/sim_eval.py).
+
 With randomize_box (default), every reset puts the box at a random position and yaw on the
 floor, sampled in polar coordinates around the arm base from box_radius_range (m) and
 box_azimuth_range (deg). The default ranges are the part of the top-down grasp workspace
@@ -68,6 +71,7 @@ from sensor_msgs.msg import Image
 from std_srvs.srv import Trigger
 
 from .cameras import HEIGHT, WIDTH, CameraRenderer
+from .pick_place_sim import PickPlaceSim
 
 
 def to_time_msg(seconds):
@@ -102,34 +106,20 @@ class MujocoSim(Node):
         self.declare_parameter('camera_width', WIDTH)
 
         model_path = self.get_parameter('model_path').value
-        self.model = mujoco.MjModel.from_xml_path(model_path)
-        self.data = mujoco.MjData(self.model)
+        # Physics, box placement and joint layout; this node only adds the ROS interface.
+        self.sim = PickPlaceSim(
+            model_path, keyframe=self.get_parameter('keyframe').value,
+            frame_rate=self.get_parameter('publish_rate').value,
+            randomize_box=self.get_parameter('randomize_box').value,
+            box_radius_range=self.get_parameter('box_radius_range').value,
+            box_azimuth_range=self.get_parameter('box_azimuth_range').value,
+            box_rel_yaw_range=self.get_parameter('box_rel_yaw_range').value,
+            seed=self.get_parameter('seed').value)
+        self.model, self.data = self.sim.model, self.sim.data
         self.get_logger().info(f'Loaded {model_path}')
-
-        keyframe = self.get_parameter('keyframe').value
-        self.key_id = -1
-        if keyframe:
-            self.key_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, keyframe)
-            if self.key_id < 0:
-                raise ValueError(f'Keyframe "{keyframe}" not found in model')
-
-        # The controllable joints are the ones driven by actuators, in actuator order.
-        m = self.model
-        joint_ids = [int(m.actuator_trnid[i, 0]) for i in range(m.nu)]
-        self.joint_names = [m.joint(j).name for j in joint_ids]
-        self.qpos_adr = np.array([m.jnt_qposadr[j] for j in joint_ids])
-        self.dof_adr = np.array([m.jnt_dofadr[j] for j in joint_ids])
-        self.ctrl_low = m.actuator_ctrlrange[:, 0].copy()
-        self.ctrl_high = m.actuator_ctrlrange[:, 1].copy()
+        self.joint_names = self.sim.joint_names
         self.name_to_index = {n: i for i, n in enumerate(self.joint_names)}
-        self.box_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, 'box')
-        self.box_qpos_adr = None
-        self.randomize_box = self.get_parameter('randomize_box').value
-        if self.box_id >= 0:
-            self.box_qpos_adr = m.jnt_qposadr[m.body_jntadr[self.box_id]]
-            self.box_geom_id = int(m.body_geomadr[self.box_id])
-            self.box_rgba = m.geom_rgba[self.box_geom_id].copy()
-        self.rng = np.random.default_rng(self.get_parameter('seed').value)
+        self.box_id = self.sim.box_id
 
         # Sim time keeps increasing across resets so /clock never jumps backwards.
         self.time_offset = 0.0
@@ -142,7 +132,6 @@ class MujocoSim(Node):
         # happened, the pose is where /place_box wants the box (None = random).
         self.reset_requests = []
         self.command_stamp = -1    # ns, stamp of the latest /joint_command (for sync_mode)
-        self._reset_state()
         self.ctrl_target = self.data.ctrl.copy()
         self.rtf = self.get_parameter('realtime_factor').value
         self.add_on_set_parameters_callback(self._on_set_parameters)
@@ -158,7 +147,7 @@ class MujocoSim(Node):
         self.renderer = None  # created in run(): its OpenGL context belongs to the sim thread
         self.create_subscription(JointState, 'joint_command', self._on_command, 10)
         self.create_service(Trigger, 'reset', self._on_reset)
-        if self.box_qpos_adr is not None:
+        if self.box_id >= 0:
             self.create_subscription(Pose2D, 'place_box', self._on_place_box, 10)
 
         self.get_logger().info(f'Joints: {self.joint_names}')
@@ -167,48 +156,9 @@ class MujocoSim(Node):
         return self.time_offset + self.data.time
 
     def _reset_state(self, box_pose=None):
-        """Reset physics and hold the initial pose; put the box at box_pose (x, y, yaw) if
-        given, else at a random pose (randomize_box) or the model's. Sim thread only."""
+        """Reset the scene (PickPlaceSim.reset), keeping sim time going. Sim thread only."""
         self.time_offset += self.data.time
-        if self.key_id >= 0:
-            mujoco.mj_resetDataKeyframe(self.model, self.data, self.key_id)
-        else:
-            mujoco.mj_resetData(self.model, self.data)
-        if box_pose is not None:
-            self._place_box(*box_pose)
-        elif self.box_qpos_adr is not None and self.randomize_box:
-            self._randomize_box()
-        if self.box_qpos_adr is not None:
-            x, y = self.data.qpos[self.box_qpos_adr:self.box_qpos_adr + 2]
-            in_range = self._in_workspace(x, y)
-            self.model.geom_rgba[self.box_geom_id] = self.box_rgba if in_range else (1, 0.8, 0, 1)
-        self.data.ctrl[:] = np.clip(self.data.qpos[self.qpos_adr], self.ctrl_low, self.ctrl_high)
-        mujoco.mj_forward(self.model, self.data)
-
-    def _in_workspace(self, x, y, eps=1e-6):
-        """Whether (x, y) is in the box sampling sector (box_radius_range x box_azimuth_range)."""
-        r_low, r_high = self.get_parameter('box_radius_range').value
-        az_low, az_high = self.get_parameter('box_azimuth_range').value
-        r, az = np.hypot(x, y), np.degrees(np.arctan2(y, x))
-        return bool(r_low - eps <= r <= r_high + eps and az_low - eps <= az <= az_high + eps)
-
-    def _randomize_box(self):
-        """Place the (free-floating) box upright at a random pose; height is kept from the model."""
-        r = self.rng.uniform(*self.get_parameter('box_radius_range').value)
-        azimuth = np.radians(self.rng.uniform(*self.get_parameter('box_azimuth_range').value))
-        rel_yaw_range = list(self.get_parameter('box_rel_yaw_range').value)
-        if rel_yaw_range == [-45.0, 45.0]:
-            # Same draws as before box_rel_yaw_range existed, so old seeds give the same boxes.
-            yaw = self.rng.uniform(-np.pi, np.pi)
-        else:
-            yaw = azimuth + np.pi / 2 + np.radians(self.rng.uniform(*rel_yaw_range))
-        self._place_box(r * np.cos(azimuth), r * np.sin(azimuth), yaw)
-
-    def _place_box(self, x, y, yaw):
-        """Put the box upright at (x, y) with the given yaw; height is kept from the model."""
-        adr = self.box_qpos_adr
-        self.data.qpos[adr:adr + 2] = x, y
-        self.data.qpos[adr + 3:adr + 7] = np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)
+        self.sim.reset(box_pose)
 
     def _on_command(self, msg):
         stamp = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
@@ -234,7 +184,7 @@ class MujocoSim(Node):
                 f'joint_command without names must have {len(self.joint_names)} positions',
                 throttle_duration_sec=2.0)
             return
-        targets = np.clip(targets, self.ctrl_low[idx], self.ctrl_high[idx])
+        targets = self.sim.clip_targets(targets, idx)
         with self.pending:
             self.ctrl_target[idx] = targets
             self.command_stamp = max(self.command_stamp, stamp)
@@ -294,8 +244,8 @@ class MujocoSim(Node):
         js = JointState()
         js.header.stamp = stamp
         js.name = self.joint_names
-        js.position = self.data.qpos[self.qpos_adr].tolist()
-        js.velocity = self.data.qvel[self.dof_adr].tolist()
+        js.position = self.sim.joint_positions().tolist()
+        js.velocity = self.sim.joint_velocities().tolist()
         js.effort = self.data.actuator_force.tolist()
         self.joint_pub.publish(js)
 
@@ -346,8 +296,6 @@ class MujocoSim(Node):
 
     def run(self):
         """Step physics, publish at publish_rate, pace to realtime_factor. Blocks until shutdown."""
-        rate = self.get_parameter('publish_rate').value
-        steps_per_publish = max(1, round(1.0 / (rate * self.model.opt.timestep)))
         sync = self.get_parameter('sync_mode').value
         sync_timeout = self.get_parameter('sync_timeout').value
 
@@ -364,7 +312,7 @@ class MujocoSim(Node):
         viewer = None
         if self.get_parameter('use_viewer').value:
             viewer = mujoco.viewer.launch_passive(self.model, self.data)
-            if self.box_qpos_adr is not None and self.get_parameter('show_workspace').value:
+            if self.box_id >= 0 and self.get_parameter('show_workspace').value:
                 self._draw_workspace(viewer)
 
         rtf = None
@@ -376,8 +324,7 @@ class MujocoSim(Node):
                     wall_start = time.perf_counter()
                     sim_start = self.sim_time()
                 self._apply_requests()
-                for _ in range(steps_per_publish):
-                    mujoco.mj_step(self.model, self.data)
+                self.sim.step_frame()
                 stamp = self._publish()
                 if viewer:
                     viewer.sync()

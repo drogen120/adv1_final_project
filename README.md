@@ -64,6 +64,7 @@ Physical AI 講義の期末課題。MuJoCo 上で SO-101 ロボットアーム�
 - [docs/eval_act_offset.md](docs/eval_act_offset.md)（中国語）：把持オフセット追加後の評価と、±45° で掴み方が切り替わる箇所での新たな失敗メカニズム
 - [docs/eval_act_images.md](docs/eval_act_images.md)（中国語）：画像入力 ACT（291 エピソード）と状態入力モデルの比較
 - [docs/eval_act_images_all_hold.md](docs/eval_act_images_all_hold.md)（中国語）：480 エピソードの画像入力 ACT（最終モデル）の評価と失敗分析
+- [docs/rlt_overview.html](docs/rlt_overview.html)（中国語）：オンライン強化学習（RL Token）の概要。システム構成、行動のデータフロー、β の役割、実験結果、次のステップの提案
 
 ## 環境
 
@@ -99,11 +100,20 @@ adv1_final_project/
 │   ├── check_expert.py                    # ROS を使わず、ランダム範囲全体でエキスパートをオフライン検証する（開閉方向の誤差も模擬できる）
 │   ├── demo.sh                            # 対話型デモ：推論サーバ、viewer 付きシミュレーション、操作パネルを 1 コマンドで起動する
 │   ├── check_retry.py                     # ROS を使わず、失敗の注入と掴み直しをオフライン検証する（注入範囲の選定用）
+│   ├── collect_embeddings.py              # ACT の rollout に沿ってエンコーダ出力を取り出す（RL token の学習用）
+│   ├── compare_evals.py                   # 2 回の評価をエピソードごとに比較する（結果が一致するか、軌道が何フレーム目から分かれるか）
+│   ├── lerobot_policy.py                  # 学習済み LeRobot 方策を numpy 入力で呼ぶ（policy_server / sim_eval で共用）
 │   ├── grasp_metrics.py                   # 評価の把持指標（開閉方向のずれ、向きの誤差、最初の接触）とエピソードごとの対応比較
 │   ├── npz_to_lerobot.py                  # npz → LeRobot データセット（LeRobot を入れた環境で実行する）
 │   ├── policy_server.py                   # 推論サーバ：LeRobot の venv で方策を読み込み、ローカル TCP で行動を返す
 │   ├── render_eval_cases.py               # 評価中の失敗エピソードといくつかの成功エピソードを mp4 に描画する（把持部分の拡大付き）
+│   ├── rejudge_evals.py                   # 保存済みの評価を現在の判定（厳密な成功を含む）で判定し直す
 │   ├── render_policy_cameras.py           # 画像入力方策が評価エピソードで見たカメラ画像（overview / wrist_cam）を描画し直す
+│   ├── rl_token.py                        # RL token：凍結した ACT エンコーダ出力の上の 1 トークンのボトルネック
+│   ├── rlt.py                             # オンライン RL：ACT を包む環境（重要な区間を actor に任せる）、残差 actor、TD3 critic
+│   ├── sim_eval.py                        # ROS を使わない閉ループ評価（policy_eval とフレーム単位で一致し、約 10 倍速い）
+│   ├── train_rl_token.py                  # RL token を学習し、z_rl に残る把持情報をプローブで確かめる
+│   ├── train_rlt.py                       # オンライン RL の学習と評価（actor が参照行動をそのまま返すとベースラインとフレーム単位で一致）
 │   └── visualize_demos.py                 # 収集したデータをアニメーションとして再生する（mp4 またはウィンドウ）
 ├── data/                                  # 収集したデータ（git 管理外）
 └── ros2_ws/                               # colcon ワークスペース
@@ -120,12 +130,14 @@ adv1_final_project/
             │   └── assets/*.stl
             └── so101_mujoco/
                 ├── sim_node.py            # MuJoCo シミュレーションノード
+                ├── pick_place_sim.py      # ROS に依存しないシミュレーションの中核（PickPlaceSim、sim_node も使う）とエピソード環境（PickPlaceEnv）
                 ├── wave_demo.py           # 正弦波の関節指令を送るデモノード
                 ├── kinematics.py          # 下向き把持のための数値 IK
                 ├── expert.py              # スクリプト化されたエキスパート：ピック・アンド・プレースの軌道全体を計画する
                 ├── collect_demos.py       # 収集ノード：エキスパートのデモ → エピソードごとに 1 つの rosbag
                 ├── export_dataset.py      # rosbag → 揃えた学習フレーム（.npz）
                 ├── policy_eval.py         # 閉ループ評価ノード：推論サーバを呼んでシミュレーションを制御し、成功率を集計する
+                ├── rollouts.py            # 評価エピソードの判定と保存（policy_eval / sim_eval で共用）
                 └── policy_demo.py         # 対話型デモノード：Tk の操作パネルでキューブを配置し、方策をリアルタイムで実行する
 ```
 
@@ -324,6 +336,43 @@ ros2 run so101_mujoco policy_eval --ros-args -p num_episodes:=50 -p output_dir:=
   把持指標と、2 つの評価のエピソードごとの対応比較：`pixi run python scripts/grasp_metrics.py data/eval/act_200_40k data/eval/act_200_60k`。
 
 同じ seed なら評価ごとのキューブ配置の列は同じなので、異なる checkpoint や実行方式の成功率を直接比較できる（`box_radius_range` を変えた場合、各エピソードの方位角と向きは変わらず、r だけが変わる）。
+
+### ROS を使わない閉ループ評価
+
+`so101_mujoco/pick_place_sim.py` はシミュレーションの中核を ROS から切り離したもの。`PickPlaceSim`（リセット、キューブのランダム配置、フレーム単位のステップ）は `sim_node` も使い、`PickPlaceEnv` はその上で `policy_eval` と同じタイミングでエピソードを回す（リセット後 `start_frame` フレーム待ってから最初の観測を返し、終了後さらに 2 フレーム待って判定する）。mujoco と numpy だけに依存するので、`.venv-lerobot` の中で方策と同じプロセスで動かせる（venv には同じバージョンの mujoco 3.15.0 が入っている）。今後のオンライン強化学習はこの環境を使う。
+
+```bash
+.venv-lerobot/bin/python scripts/sim_eval.py outputs/act_img_all_hold/checkpoints/100000/pretrained_model \
+    --seed 100 --episodes 50 --output-dir data/eval_py/act_img_all_hold_100k
+#   境界評価：--rel-yaw 35 55。チャンクごとの実行ステップ数：--n-action-steps 10（時間的アンサンブルには非対応）
+# ROS での評価とエピソードごとに比較する
+python3 scripts/compare_evals.py data/eval/act_img_all_hold_100k data/eval_py/act_img_all_hold_100k
+```
+
+出力（`episodes.jsonl` / `summary.json` / `rollouts.npz`）の形式は `policy_eval` と同じで、`grasp_metrics.py` や `render_eval_cases.py` などがそのまま使える。画像は方策が新しいチャンクを予測するフレームでだけ描画するので、画像入力方策で 1 エピソード（900 フレーム）約 2 s、ROS 版では約 30 s かかる。
+
+**ROS での評価との一致**（`act_img_all_hold` 100k、seed 100 通常 / 境界 / seed 101、計 200 エピソード）：キューブの位置はすべて同じ。187 エピソードでは軌道が ROS での評価と 900 フレーム**完全に一致**した（162 が `--start-frame 7`、25 が 6 に対応。ROS 側ではリセット後に最初に応答するフレームがスレッドの競合で 7 フレーム目か 6 フレーム目になるため）。残り 13 エピソードのうち 7 は、`sim_node` のログに同期タイムアウト（`stepping on`、1 フレームで指令を待ちきれなかった）が出たエピソードで、そのフレームから分かれている。残り 6 が含まれる評価はログを残していなかった。成功数：ROS 196/200、`sim_eval`（start_frame 7）196/200。
+
+**厳密な成功**（オンライン RL 用のより厳しい判定、`rollouts.py` の `strict_success`）：成功に加えて、最初の把持が 200 フレーム目までに閉じ始め（エキスパートは常に 156 フレーム目）、閉じ始めたときのキューブ中心の横方向のずれ（ジョー平面内、ツールの y 軸方向）が 3 mm 以内（エキスパートは 0.2 mm 以内）であること。根拠：`act_img_all_hold` 100k の成功エピソードでは、閉じるときの yaw 誤差は配置誤差とほとんど相関がない（r = −0.09、ジョーが閉じるときにキューブがまっすぐに直される）が、横方向のずれははっきり相関する（r = +0.59）。境界（|g| ≥ 30°）では約 20% のエピソードでキューブの上で迷い、200 フレーム目以降に閉じる。`episodes.jsonl` には `grasp_frame`、`grasp_lateral`（m）も入る。以前の評価は `scripts/rejudge_evals.py` で判定し直せる（`--write` で書き戻す）。同じモデルの 3 組計 200 エピソードでは、チャンクあたり 50 ステップ実行で成功 196、厳密な成功 140、30 ステップ実行では成功 198 だが厳密な成功は 109 にとどまる（横方向のずれが大きくなる。対応のある比較で p < 1e-6）。
+
+### オンライン強化学習（RL Token、進行中）
+
+RL Token 論文（`rlt.pdf`）を参考に、凍結した画像 ACT（`act_img_all_hold` 100k、チャンクあたり 50 ステップ実行）の上で小さな actor / critic を学習し、**厳密な成功**（上記）を、特に境界分布で高めることを目指す。
+
+1. `scripts/collect_embeddings.py`：ACT の rollout に沿って 10 フレームごとに ACT エンコーダ出力（162 × 512）を取り出す → `data/rlt/emb_normal`（seed 1000）、`emb_boundary`（seed 1001、`--rel-yaw 30 60`）。
+2. `scripts/train_rl_token.py`：RL token（1 トークンのボトルネック、再構成損失）を学習する → `outputs/rlt/rl_token_v0.pt`。ホールドアウトしたエピソードで再構成 R² 0.96、把持直前のプローブで横方向のずれを R² 0.81 で予測できる（関節角だけでは 0.51）。
+3. `scripts/train_rlt.py`（`scripts/rlt.py`）：100–240 フレーム目に 10 フレームごと、actor が ACT の参照行動（キューの次の 10 ステップ）に残差の修正を加える。critic は TD3 のツイン。actor が修正しなければ `sim_eval` とフレーム単位で一致する。
+
+```bash
+.venv-lerobot/bin/python scripts/train_rlt.py outputs/act_img_all_hold/checkpoints/100000/pretrained_model \
+    --token outputs/rlt/rl_token_v0.pt --output-dir outputs/rlt/run1 \
+    --action offset --reward shaped --noise 0.005 --warmup 100 --scale 0.05 --episodes 600
+# 評価（900 フレームまで実行し、sim_eval と同じ判定）
+... --eval-only --full-eval --action offset --agent outputs/rlt/run1/agent_600.pt \
+    --eval-seed 101 --eval-episodes 100 --output-dir outputs/rlt/eval_run1_b101
+```
+
+論文との違い：論文どおりの設定（actor が 10 フレームごとに 10 × 6 の修正を出力、0/1 報酬）では 1000 エピソード学習しても何も学ばなかった。10 フレームの区間ごとに 6 次元の関節オフセットを 1 つだけ出力し、その 10 フレームのすべてに加える方式（`--action offset`）にし、学習報酬に横方向のずれの滑らかな版（`--reward shaped`）を使って初めて効果が出た。現在の結果（run1 の最終モデル、未使用のキューブ配置、ベースラインとエピソードごとに対応比較）：境界 seed 101 の 100 エピソードで厳密な成功 67 → 74（+8/−1、p = 0.04）、通常 seed 100 の 50 エピソードで 36 → 38。成功数は減っていない。残る失敗は主に把持の遅れ（修正範囲では届かない）。
 
 ### 対話型デモ
 
