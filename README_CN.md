@@ -114,7 +114,8 @@ adv1_final_project/
 │   ├── sim_eval.py                        # 不用 ROS 的闭环评估（结果与 policy_eval 逐帧一致，快约 10 倍）
 │   ├── train_rl_token.py                  # 训练 RL token，并用探针检查 z_rl 保留了哪些抓取信息
 │   ├── train_rlt.py                       # 在线 RL 训练与评估（actor 照抄参考动作时与基线逐帧一致）
-│   └── visualize_demos.py                 # 把采集的数据回放成动画（mp4 或窗口）
+│   ├── visualize_demos.py                 # 把采集的数据回放成动画（mp4 或窗口）
+│   └── watch_rlt.py                       # 在 MuJoCo 窗口里实时观看在线 RL 训练（与 train_rlt.py 同一个循环，不写 outputs/）
 ├── data/                                  # 采集的数据（不纳入 git）
 └── ros2_ws/                               # colcon 工作区
     └── src/
@@ -373,6 +374,15 @@ python3 scripts/compare_evals.py data/eval/act_img_all_hold_100k data/eval_py/ac
 ```
 
 与论文的不同：照论文设定（actor 每 10 帧输出 10 × 6 修正、0/1 奖励）训练 1000 回合没有学到东西；改成每个 10 帧段只输出一个 6 维关节偏移、加到这 10 帧的每一步上（`--action offset`）、训练奖励用横向偏移的平滑版本（`--reward shaped`）后才有效。当前结果（run1 最终模型，没用过的方块，与基线逐回合配对）：边界 seed 101 100 回合严格成功 67 → 74（+8/−1，p = 0.04），普通 seed 100 50 回合 36 → 38，成功数没有下降。剩下的失败主要是抓取过晚（修正范围管不到）。
+
+在窗口里直观地看训练时环境交互和更新是怎么交替进行的（`scripts/watch_rlt.py`，循环与 `train_rlt.py` 相同，用 run1 的设定，不写 `outputs/`）：
+
+```bash
+.venv-lerobot/bin/mjpython scripts/watch_rlt.py --speed 0.5      # 默认接着 run1 的 agent_600 训练
+.venv-lerobot/bin/mjpython scripts/watch_rlt.py --agent ''       # 从零初始化的 actor（= ACT）开始
+```
+
+窗口左上角显示当前帧、谁在控制（第 0–99 帧 ACT、第 100–239 帧 actor = ACT + Δ、之后 ACT 跑到第 500 帧判定）、Δ、replay 大小 / 更新次数、critic 的 Q 和上一回合的奖励；终端每 10 帧打印一行（Δ、奖励、有没有更新）。每个 10 帧段执行完就存一条经验并更新 critic 5 次、actor 2 次（replay 达到 `--batch-size` 后才开始，默认 64，训练时是 256）。Δ 只有几 mrad（约 1–2 mm），画面上基本看不出修正。macOS 上必须用 `mjpython`；关闭窗口即停止。
 
 ### 交互演示
 
